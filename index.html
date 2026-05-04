@@ -945,11 +945,21 @@
         btnDisconnect.disabled = false;
 
         let aborted = false,
-          adbConn = null;
+          adbConn = null,
+          _watchdogRef = null;
+
+        // helper so watchdog is always cleared no matter where stopStream is called
+        const clearWatchdog = () => {
+          if (_watchdogRef) {
+            clearTimeout(_watchdogRef);
+            _watchdogRef = null;
+          }
+        };
 
         stopStream = () => {
           aborted = true;
-          setStatus("", "Disconnected");
+          clearWatchdog();
+          setStatus("", "Disconnected — plug in & click Connect Phone");
           streaming = false;
           authNotice.style.display = "none";
           btnConnect.disabled = false;
@@ -963,17 +973,47 @@
           byteCount = 0;
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           adbConn?.disconnect();
+          // remove the USB disconnect listener if it exists
+          if (stopStream._usbHandler) {
+            navigator.usb.removeEventListener(
+              "disconnect",
+              stopStream._usbHandler,
+            );
+            stopStream._usbHandler = null;
+          }
         };
         btnDisconnect.onclick = stopStream;
 
         try {
           setStatus("connecting", "Select your Android device…");
-          const device = await navigator.usb.requestDevice({
-            filters: [
-              { classCode: 0xff, subclassCode: 0x42, protocolCode: 0x01 },
-            ],
-          });
+          let device;
+          try {
+            device = await navigator.usb.requestDevice({
+              filters: [
+                { classCode: 0xff, subclassCode: 0x42, protocolCode: 0x01 },
+              ],
+            });
+          } catch (pickErr) {
+            // User cancelled the picker, or no device matched — reset quietly
+            const cancelled = pickErr.name === "NotFoundError";
+            setStatus(
+              "",
+              cancelled ? "Ready — No internet needed" : pickErr.message,
+            );
+            btnConnect.disabled = false;
+            btnDisconnect.disabled = true;
+            qualitySelect.disabled = false;
+            statRes.classList.remove("active");
+            return;
+          }
           if (aborted) return;
+
+          // Listen for physical USB unplug and stop cleanly
+          const usbDisconnectHandler = (evt) => {
+            if (evt.device === device) stopStream();
+          };
+          navigator.usb.addEventListener("disconnect", usbDisconnectHandler);
+          stopStream._usbHandler = usbDisconnectHandler;
 
           setStatus("connecting", "Authenticating ADB…");
           authNotice.style.display = "block";
@@ -1008,7 +1048,7 @@
 
           // Watchdog: if no frames arrive in 10 s, show a helpful error
           let firstFrameReceived = false;
-          const watchdog = setTimeout(() => {
+          _watchdogRef = setTimeout(() => {
             if (!firstFrameReceived && !aborted) {
               setStatus(
                 "error",
@@ -1042,7 +1082,7 @@
                 idleOverlay.style.display = "none";
                 if (!firstFrameReceived) {
                   firstFrameReceived = true;
-                  clearTimeout(watchdog);
+                  clearWatchdog();
                   setStatus("connected", `Streaming · ${size}`);
                 }
               },
@@ -1094,7 +1134,7 @@
                       idleOverlay.style.display = "none";
                       if (!firstFrameReceived) {
                         firstFrameReceived = true;
-                        clearTimeout(watchdog);
+                        clearWatchdog();
                         setStatus("connected", `Streaming · ${size}`);
                       }
                     },
@@ -1155,16 +1195,18 @@
           };
 
           shell.onClose = () => {
-            clearTimeout(watchdog);
+            clearWatchdog();
             if (!aborted) stopStream();
           };
         } catch (err) {
           console.error("Connection error:", err);
+          clearWatchdog();
           authNotice.style.display = "none";
           setStatus("error", err.message || "Connection failed");
           btnConnect.disabled = false;
           btnDisconnect.disabled = true;
           qualitySelect.disabled = false;
+          statRes.classList.remove("active");
           streaming = false;
         }
       };
