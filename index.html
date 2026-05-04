@@ -726,14 +726,22 @@
           return msg;
         }
 
-        // FIX 1 + FIX 4: called manually after auth handler is wired up; reads 64K chunks
+        // Read loop: uses endpoint maxPacketSize-aligned reads to avoid ChromeOS
+        // USB bulk transfer stalls. TransferError mid-stream is retried up to 8
+        // times (it's transient on ChromeOS); only fatal errors break the loop.
         async startReadLoop() {
+          // Use the endpoint's own maxPacketSize, scaled up to a safe multiple.
+          // 16 * 512 = 8192 is safe; large enough for throughput, aligned for USB.
+          const pktSize = this.epIn.packetSize || 512;
+          const readSize = pktSize * 16; // 8192 bytes — safe for ChromeOS ADB bulk
+          let retries = 0;
           while (!this._closed) {
             try {
               const r = await this.device.transferIn(
                 this.epIn.endpointNumber,
-                65536,
+                readSize,
               );
+              retries = 0; // reset retry counter on any successful read
               if (r.data && r.data.byteLength > 0)
                 this._append(
                   new Uint8Array(
@@ -747,8 +755,18 @@
                 if (this._onMessage) this._onMessage(msg);
               }
             } catch (e) {
-              if (!this._closed)
-                for (const [, s] of this._streams) s.reject?.(e);
+              if (this._closed) break;
+              // TransferError on ChromeOS is often transient — retry a few times
+              if (e.name === "NetworkError" && retries < 8) {
+                retries++;
+                await new Promise((r) => setTimeout(r, 50 * retries)); // back-off
+                continue;
+              }
+              // Fatal error — notify all open streams via onError then exit
+              for (const [, s] of this._streams) {
+                if (s.onError) s.onError(e);
+                else s.reject?.(e);
+              }
               break;
             }
           }
@@ -760,13 +778,15 @@
             const s = this._streams.get(arg1);
             if (s) {
               s.onData?.(data);
-              this._send(makeMsg(A_OKAY, arg1, arg0, null));
+              // Send OKAY ack — ignore send errors (device may have unplugged)
+              this._send(makeMsg(A_OKAY, arg1, arg0, null)).catch(() => {});
             }
           } else if (cmd === A_OKAY) {
             const s = this._streams.get(arg0);
             if (s && !s.remoteId) {
               s.remoteId = arg1;
               s.resolve?.(s);
+              s.resolve = null; // clear so it can't be called twice
             }
           } else if (cmd === A_CLSE) {
             const s = this._streams.get(arg1);
@@ -1191,9 +1211,22 @@
             }
           };
 
+          // Called when phone closes the shell (normal end)
           shell.onClose = () => {
             clearWatchdog();
             if (!aborted) stopStream();
+          };
+          // Called when USB read loop dies with a fatal error
+          shell.onError = (e) => {
+            clearWatchdog();
+            console.error("Stream error:", e);
+            if (!aborted) {
+              setStatus(
+                "error",
+                "USB transfer error — replug cable & reconnect",
+              );
+              stopStream();
+            }
           };
         } catch (err) {
           console.error("Connection error:", err);
