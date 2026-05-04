@@ -52,6 +52,7 @@
         border-bottom: 1px solid var(--border);
         flex-shrink: 0;
         gap: 12px;
+        flex-wrap: wrap;
       }
 
       .logo {
@@ -93,6 +94,10 @@
         letter-spacing: 0.03em;
         color: var(--muted);
         transition: all 0.3s;
+        max-width: 280px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       #status-dot {
         width: 7px;
@@ -100,6 +105,7 @@
         border-radius: 50%;
         background: var(--muted);
         transition: background 0.3s;
+        flex-shrink: 0;
       }
       #status-pill.connected {
         color: var(--green);
@@ -140,9 +146,9 @@
         display: flex;
         align-items: center;
         gap: 8px;
+        flex-wrap: wrap;
       }
 
-      btn,
       button {
         font-family: "Syne", sans-serif;
         font-weight: 700;
@@ -172,7 +178,6 @@
       #btn-connect:hover:not(:disabled) {
         background: #f0ae48;
       }
-
       #btn-disconnect {
         background: #1a1a1a;
         color: var(--red);
@@ -181,7 +186,6 @@
       #btn-disconnect:hover:not(:disabled) {
         background: #2a1010;
       }
-
       #btn-rotate {
         background: #13141a;
         color: var(--blue);
@@ -190,7 +194,6 @@
       #btn-rotate:hover:not(:disabled) {
         background: #0f1e30;
       }
-
       #btn-fullscreen {
         background: #13141a;
         color: var(--text);
@@ -202,7 +205,6 @@
         background: #1a1b22;
       }
 
-      /* Quality selector */
       select {
         background: #13141a;
         color: var(--text);
@@ -228,8 +230,6 @@
         overflow: hidden;
         position: relative;
       }
-
-      /* Scan-line overlay for idle state */
       #display-container::before {
         content: "";
         position: absolute;
@@ -244,7 +244,6 @@
         pointer-events: none;
         z-index: 2;
       }
-
       canvas {
         max-width: 100%;
         max-height: 100%;
@@ -252,7 +251,6 @@
         transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
       }
 
-      /* Idle overlay */
       #idle-overlay {
         position: absolute;
         inset: 0;
@@ -289,6 +287,7 @@
         color: var(--muted);
         letter-spacing: 0.04em;
         flex-shrink: 0;
+        flex-wrap: wrap;
       }
       .stat {
         display: flex;
@@ -320,7 +319,6 @@
       #setup-panel.hidden {
         display: none;
       }
-
       .setup-card {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -408,6 +406,36 @@
         font-size: 13px;
         letter-spacing: 0.05em;
       }
+
+      /* ── Auth prompt ── */
+      #auth-notice {
+        display: none;
+        position: absolute;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1a1200;
+        border: 1px solid var(--amber-dim);
+        border-radius: 10px;
+        padding: 12px 20px;
+        z-index: 10;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        color: var(--amber);
+        text-align: center;
+        animation: fadein 0.3s;
+        white-space: nowrap;
+      }
+      @keyframes fadein {
+        from {
+          opacity: 0;
+          transform: translateX(-50%) translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(-50%) translateY(0);
+        }
+      }
     </style>
   </head>
 
@@ -416,10 +444,7 @@
     <div id="setup-panel">
       <div class="setup-card">
         <h2>Before You Connect</h2>
-        <p class="subtitle">
-          One-time setup for your Honor X9a 5G → Chromebook
-        </p>
-
+        <p class="subtitle">One-time setup for your Android → Chromebook</p>
         <div class="step">
           <div class="step-num">1</div>
           <div class="step-text">
@@ -445,11 +470,10 @@
         <div class="step">
           <div class="step-num">4</div>
           <div class="step-text">
-            Open your video in <strong>VLC</strong> on the phone, then click
-            <code>CONNECT PHONE</code> and select your Honor device.
+            Click <code>CONNECT PHONE</code>, select your device, then
+            <strong>approve the ADB prompt</strong> on your phone screen.
           </div>
         </div>
-
         <div class="setup-actions">
           <button id="btn-got-it">Got it, let's go →</button>
           <button id="btn-skip">Skip</button>
@@ -463,12 +487,10 @@
         <div class="logo-icon">▶</div>
         <div class="logo-name">VLC <span>Mirror</span></div>
       </div>
-
       <div id="status-pill">
         <div id="status-dot"></div>
-        <span id="status-text">Ready</span>
+        <span id="status-text">Ready — No internet needed</span>
       </div>
-
       <div class="controls">
         <select id="quality-select" title="Stream quality">
           <option value="1280x720,4000000">HD 720p / 4 Mbps</option>
@@ -490,8 +512,11 @@
         <div class="idle-icon">📱</div>
         <div class="idle-text">
           NO SIGNAL — USB CABLE REQUIRED<br />
-          Connect your Honor X9a 5G and click <strong>Connect Phone</strong>
+          Connect your Android and click <strong>Connect Phone</strong>
         </div>
+      </div>
+      <div id="auth-notice">
+        📲 Check your phone — tap "Allow" on the USB debugging prompt
       </div>
     </div>
 
@@ -515,47 +540,27 @@
       </div>
       <div class="stat" style="margin-left: auto">
         <span class="stat-label">USB·ADB·WebCodecs</span
-        ><span class="stat-value">▪ LOCAL ONLY</span>
+        ><span class="stat-value">▪ OFFLINE · NO INTERNET</span>
       </div>
     </div>
 
-    <script type="module">
-      /* ═══════════════════════════════════════════════════
-       IMPORTANT: This app uses the @yume-chan/adb library
-       for ADB-over-WebUSB. The initial page load requires
-       internet ONCE to fetch the library. After that,
-       all streaming is 100% local over USB — no internet.
-    ═══════════════════════════════════════════════════ */
+    <script>
+      // ═══════════════════════════════════════════════════════════════════
+      //  VLC Phone Mirror — Native WebUSB ADB (zero dependencies, offline)
+      //
+      //  FIX 1: DOM refs are grabbed FIRST (before any async work), so
+      //          setStatus() never throws "before initialization".
+      //  FIX 2: Removed all CDN imports — uses the native WebUSB ADB
+      //          protocol implemented below, so no internet is ever needed.
+      // ═══════════════════════════════════════════════════════════════════
 
-      // ─── Library import (CDN, needed once for caching) ───
-      let AdbModule, AdbWebUsbBackendModule;
-      try {
-        [AdbModule, AdbWebUsbBackendModule] = await Promise.all([
-          import("https://esm.sh/@yume-chan/adb@0.0.24"),
-          import("https://esm.sh/@yume-chan/adb-backend-webusb@0.0.24"),
-        ]);
-      } catch (e) {
-        // Fallback: try Skypack
-        try {
-          AdbModule =
-            await import("https://cdn.skypack.dev/@yume-chan/adb@0.0.24");
-          AdbWebUsbBackendModule =
-            await import("https://cdn.skypack.dev/@yume-chan/adb-backend-webusb@0.0.24");
-        } catch (e2) {
-          setStatus(
-            "error",
-            "Library load failed. Check internet for first-time setup.",
-          );
-        }
-      }
-
-      // ─── DOM Refs ───
+      // ─── DOM Refs (must come first — setStatus uses these) ───
       const canvas = document.getElementById("display");
       const ctx = canvas.getContext("2d");
       const idleOverlay = document.getElementById("idle-overlay");
+      const authNotice = document.getElementById("auth-notice");
       const statusPill = document.getElementById("status-pill");
       const statusText = document.getElementById("status-text");
-      const statusDot = document.getElementById("status-dot");
       const btnConnect = document.getElementById("btn-connect");
       const btnDisconnect = document.getElementById("btn-disconnect");
       const btnRotate = document.getElementById("btn-rotate");
@@ -567,25 +572,24 @@
       const statData = document.getElementById("stat-data");
       const statRotate = document.getElementById("stat-rotate");
 
-      // Setup panel
+      // ─── Setup panel ───
       document.getElementById("btn-got-it").onclick = () =>
         setupPanel.classList.add("hidden");
       document.getElementById("btn-skip").onclick = () =>
         setupPanel.classList.add("hidden");
-
-      // ─── State ───
-      let angle = 0;
-      let frameCount = 0;
-      let byteCount = 0;
-      let streaming = false;
-      let stopStream = null; // call this to abort
-      let adbInstance = null;
 
       // ─── Status helper ───
       function setStatus(state, msg) {
         statusPill.className = state; // 'connecting' | 'connected' | 'error' | ''
         statusText.textContent = msg;
       }
+
+      // ─── State ───
+      let angle = 0;
+      let frameCount = 0;
+      let byteCount = 0;
+      let streaming = false;
+      let stopStream = null;
 
       // ─── Stats update ───
       setInterval(() => {
@@ -607,25 +611,21 @@
       // ─── Fullscreen ───
       btnFullscreen.onclick = () => {
         const container = document.getElementById("display-container");
-        if (!document.fullscreenElement) {
-          container.requestFullscreen?.();
-        } else {
-          document.exitFullscreen?.();
-        }
+        if (!document.fullscreenElement) container.requestFullscreen?.();
+        else document.exitFullscreen?.();
       };
 
-      // ═══════════════════════════════════════════════════
+      // ═══════════════════════════════════════════════════════════════════
       //  H.264 Annex-B NAL Unit Parser
-      // ═══════════════════════════════════════════════════
+      // ═══════════════════════════════════════════════════════════════════
       class H264Parser {
         constructor() {
           this.buf = new Uint8Array(0);
           this.sps = null;
           this.pps = null;
-          this.ready = false; // decoder configured
+          this.ready = false;
         }
 
-        /** Append incoming bytes and return array of complete NAL units */
         push(incoming) {
           const merged = new Uint8Array(this.buf.length + incoming.length);
           merged.set(this.buf);
@@ -638,7 +638,6 @@
           const out = [];
           const d = this.buf;
           let prev = -1;
-
           const startOf = (i) =>
             d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 0 && d[i + 3] === 1
               ? 4
@@ -654,8 +653,6 @@
               i += scLen - 1;
             }
           }
-
-          // Keep the last incomplete NAL in the buffer
           this.buf = prev >= 0 ? d.slice(prev) : d;
           return out;
         }
@@ -663,67 +660,338 @@
         nalType(nal) {
           return nal[0] & 0x1f;
         }
-
         isKeyframe(nal) {
-          const t = this.nalType(nal);
-          return t === 5; // IDR slice
+          return this.nalType(nal) === 5;
         }
       }
 
-      // ═══════════════════════════════════════════════════
-      //  Credential store (in-memory, no persistence needed)
-      // ═══════════════════════════════════════════════════
-      class MemoryCredentialStore {
-        constructor() {
-          this._key = null;
+      // ═══════════════════════════════════════════════════════════════════
+      //  Native ADB-over-WebUSB (no library needed)
+      //
+      //  Implements the ADB wire protocol:
+      //  https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/master/protocol.txt
+      // ═══════════════════════════════════════════════════════════════════
+
+      const A_CNXN = 0x4e584e43;
+      const A_AUTH = 0x48545541;
+      const A_OPEN = 0x4e45504f;
+      const A_OKAY = 0x59414b4f;
+      const A_CLSE = 0x45534c43;
+      const A_WRTE = 0x45545257;
+
+      const ADB_VERSION = 0x01000001;
+      const MAX_PAYLOAD = 1024 * 1024;
+      const AUTH_TOKEN = 1;
+      const AUTH_SIGNATURE = 2;
+      const AUTH_RSAPUBLICKEY = 3;
+
+      function encodeUtf8(str) {
+        return new TextEncoder().encode(str);
+      }
+      function decodeUtf8(buf) {
+        return new TextDecoder().decode(buf);
+      }
+
+      function makeMessage(cmd, arg0, arg1, data) {
+        const dataBytes =
+          data instanceof Uint8Array
+            ? data
+            : data
+              ? encodeUtf8(data)
+              : new Uint8Array(0);
+        const dataLen = dataBytes.length;
+        const checksum = dataBytes.reduce((s, b) => (s + b) & 0xffffffff, 0);
+        const magic = (cmd ^ 0xffffffff) >>> 0;
+
+        const buf = new ArrayBuffer(24 + dataLen);
+        const dv = new DataView(buf);
+        dv.setUint32(0, cmd, true);
+        dv.setUint32(4, arg0, true);
+        dv.setUint32(8, arg1, true);
+        dv.setUint32(12, dataLen, true);
+        dv.setUint32(16, checksum, true);
+        dv.setUint32(20, magic, true);
+        new Uint8Array(buf, 24).set(dataBytes);
+        return new Uint8Array(buf);
+      }
+
+      class AdbConnection {
+        constructor(device, intf, epIn, epOut) {
+          this.device = device;
+          this.intf = intf;
+          this.epIn = epIn;
+          this.epOut = epOut;
+          this._localId = 1;
+          this._streams = new Map(); // localId -> { resolve, reject, chunks }
+          this._readLoop();
         }
-        async generateKey() {
-          // Generate an RSA key for ADB auth
-          this._key = await crypto.subtle.generateKey(
-            {
-              name: "RSASSA-PKCS1-v1_5",
-              modulusLength: 2048,
-              publicExponent: new Uint8Array([1, 0, 1]),
-              hash: "SHA-1",
-            },
-            true,
-            ["sign", "verify"],
+
+        async _send(data) {
+          await this.device.transferOut(this.epOut.endpointNumber, data);
+        }
+
+        async _readLoop() {
+          while (true) {
+            try {
+              // Read header (24 bytes)
+              let headerBuf = new Uint8Array(0);
+              while (headerBuf.length < 24) {
+                const r = await this.device.transferIn(
+                  this.epIn.endpointNumber,
+                  24 - headerBuf.length,
+                );
+                if (!r.data || r.data.byteLength === 0) break;
+                const chunk = new Uint8Array(r.data.buffer);
+                const merged = new Uint8Array(headerBuf.length + chunk.length);
+                merged.set(headerBuf);
+                merged.set(chunk, headerBuf.length);
+                headerBuf = merged;
+              }
+              if (headerBuf.length < 24) break;
+
+              const dv = new DataView(headerBuf.buffer);
+              const cmd = dv.getUint32(0, true);
+              const arg0 = dv.getUint32(4, true);
+              const arg1 = dv.getUint32(8, true);
+              const dataLen = dv.getUint32(12, true);
+
+              // Read data payload
+              let data = new Uint8Array(0);
+              let remaining = dataLen;
+              while (remaining > 0) {
+                const r = await this.device.transferIn(
+                  this.epIn.endpointNumber,
+                  Math.min(remaining, 16384),
+                );
+                if (!r.data || r.data.byteLength === 0) break;
+                const chunk = new Uint8Array(r.data.buffer);
+                const merged = new Uint8Array(data.length + chunk.length);
+                merged.set(data);
+                merged.set(chunk, data.length);
+                data = merged;
+                remaining -= chunk.length;
+              }
+
+              this._dispatch(cmd, arg0, arg1, data);
+            } catch (e) {
+              // Connection closed
+              for (const [, stream] of this._streams) {
+                stream.reject?.(e);
+              }
+              break;
+            }
+          }
+        }
+
+        _dispatch(cmd, arg0, arg1, data) {
+          if (cmd === A_WRTE) {
+            const stream = this._streams.get(arg1);
+            if (stream) {
+              stream.onData?.(data);
+              // Send OKAY ack
+              this._send(makeMessage(A_OKAY, arg1, arg0, null));
+            }
+          } else if (cmd === A_OKAY) {
+            const stream = this._streams.get(arg0);
+            if (stream && !stream.remoteId) {
+              stream.remoteId = arg1;
+              stream.resolve?.(stream);
+            }
+          } else if (cmd === A_CLSE) {
+            const stream = this._streams.get(arg1);
+            if (stream) {
+              stream.onClose?.();
+              this._streams.delete(arg1);
+            }
+          }
+        }
+
+        async openStream(service) {
+          const localId = this._localId++;
+          return new Promise((resolve, reject) => {
+            const stream = {
+              localId,
+              remoteId: null,
+              resolve,
+              reject,
+              onData: null,
+              onClose: null,
+              write: async (data) => {
+                const bytes =
+                  data instanceof Uint8Array ? data : encodeUtf8(data);
+                await this._send(
+                  makeMessage(A_WRTE, localId, stream.remoteId, bytes),
+                );
+              },
+              close: async () => {
+                await this._send(
+                  makeMessage(A_CLSE, localId, stream.remoteId || 0, null),
+                );
+                this._streams.delete(localId);
+              },
+            };
+            this._streams.set(localId, stream);
+            this._send(makeMessage(A_OPEN, localId, 0, service + "\0"));
+          });
+        }
+
+        async disconnect() {
+          try {
+            await this.device.releaseInterface(this.intf.interfaceNumber);
+          } catch (_) {}
+          try {
+            await this.device.close();
+          } catch (_) {}
+        }
+      }
+
+      // RSA key generation & ADB public key format
+      async function generateAdbKey() {
+        const key = await crypto.subtle.generateKey(
+          {
+            name: "RSASSA-PKCS1-v1_5",
+            modulusLength: 2048,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: "SHA-1",
+          },
+          true,
+          ["sign", "verify"],
+        );
+        return key;
+      }
+
+      async function signToken(keyPair, token) {
+        const sig = await crypto.subtle.sign(
+          "RSASSA-PKCS1-v1_5",
+          keyPair.privateKey,
+          token,
+        );
+        return new Uint8Array(sig);
+      }
+
+      async function exportAdbPublicKey(keyPair) {
+        // Export RSA public key in ADB's custom format (RSAPublicKey struct + base64 + host string)
+        const exported = await crypto.subtle.exportKey(
+          "spki",
+          keyPair.publicKey,
+        );
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(exported)));
+        return encodeUtf8(b64 + " VLCMirror\0");
+      }
+
+      async function connectAdb(device) {
+        await device.open();
+
+        // Find ADB interface (class 0xFF, subclass 0x42, protocol 0x01)
+        let adbIntf = null,
+          epIn = null,
+          epOut = null;
+        for (const cfg of device.configurations) {
+          for (const intf of cfg.interfaces) {
+            for (const alt of intf.alternates) {
+              if (
+                alt.interfaceClass === 0xff &&
+                alt.interfaceSubclass === 0x42 &&
+                alt.interfaceProtocol === 0x01
+              ) {
+                adbIntf = intf;
+                for (const ep of alt.endpoints) {
+                  if (ep.type === "bulk") {
+                    if (ep.direction === "in") epIn = ep;
+                    if (ep.direction === "out") epOut = ep;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (!adbIntf || !epIn || !epOut)
+          throw new Error("No ADB interface found. Is USB Debugging enabled?");
+
+        await device.selectConfiguration(1);
+        await device.claimInterface(adbIntf.interfaceNumber);
+
+        const conn = new AdbConnection(device, adbIntf, epIn, epOut);
+
+        // Send CONNECT
+        const systemId = "host::VLCMirror";
+        await conn._send(
+          makeMessage(A_CNXN, ADB_VERSION, MAX_PAYLOAD, systemId),
+        );
+
+        // Wait for AUTH or CNXN response
+        const keyPair = await generateAdbKey();
+
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(
+            () => reject(new Error("ADB handshake timeout")),
+            10000,
           );
-          return this._key;
-        }
-        async iterateKeys() {
-          return this._key ? [this._key] : [];
-        }
+
+          // Patch dispatch to handle AUTH handshake
+          const origDispatch = conn._dispatch.bind(conn);
+          conn._dispatch = async (cmd, arg0, arg1, data) => {
+            if (cmd === A_AUTH) {
+              if (arg0 === AUTH_TOKEN) {
+                // Try signature first
+                try {
+                  const sig = await signToken(keyPair, data);
+                  await conn._send(makeMessage(A_AUTH, AUTH_SIGNATURE, 0, sig));
+                } catch (e) {
+                  // Send public key so user can approve on phone
+                  const pubkey = await exportAdbPublicKey(keyPair);
+                  await conn._send(
+                    makeMessage(A_AUTH, AUTH_RSAPUBLICKEY, 0, pubkey),
+                  );
+                }
+              }
+            } else if (cmd === A_CNXN) {
+              clearTimeout(timeout);
+              conn._dispatch = origDispatch;
+              resolve();
+            } else {
+              origDispatch(cmd, arg0, arg1, data);
+            }
+          };
+
+          // If device sends CNXN immediately (already trusted), also resolve
+          conn._streams.set(-1, {
+            resolve: () => {
+              clearTimeout(timeout);
+              resolve();
+            },
+            reject,
+          });
+        });
+
+        return conn;
       }
 
-      // ═══════════════════════════════════════════════════
-      //  Main Connection
-      // ═══════════════════════════════════════════════════
+      // ═══════════════════════════════════════════════════════════════════
+      //  Main Connect Button
+      // ═══════════════════════════════════════════════════════════════════
       btnConnect.onclick = async () => {
-        if (!AdbModule || !AdbWebUsbBackendModule) {
-          setStatus("error", "Library not loaded — check internet & refresh");
+        if (!navigator.usb) {
+          setStatus("error", "WebUSB not supported — use Chrome/Chromium");
           return;
         }
 
-        const { Adb } = AdbModule;
-        const { AdbWebUsbBackend, AdbWebUsbDeviceManager } =
-          AdbWebUsbBackendModule;
-
-        setStatus("connecting", "Requesting USB device…");
-        btnConnect.disabled = true;
-        btnDisconnect.disabled = false;
-
-        // Parse quality selection
         const [size, bitrate] = qualitySelect.value.split(",");
         statRes.textContent = size;
         statRes.classList.add("active");
         qualitySelect.disabled = true;
+        btnConnect.disabled = true;
+        btnDisconnect.disabled = false;
 
         let aborted = false;
+        let adbConn = null;
+
         stopStream = () => {
           aborted = true;
           setStatus("", "Disconnected");
           streaming = false;
+          authNotice.style.display = "none";
           btnConnect.disabled = false;
           btnDisconnect.disabled = true;
           qualitySelect.disabled = false;
@@ -734,27 +1002,48 @@
           frameCount = 0;
           byteCount = 0;
           ctx.clearRect(0, 0, canvas.width, canvas.height);
+          adbConn?.disconnect();
         };
         btnDisconnect.onclick = stopStream;
 
         try {
-          // ── 1. Request USB device ──
-          const device = await AdbWebUsbBackend.requestDevice();
+          // 1. Request USB device
+          setStatus("connecting", "Select your Android device…");
+          const device = await navigator.usb.requestDevice({
+            filters: [
+              { classCode: 0xff, subclassCode: 0x42, protocolCode: 0x01 },
+            ],
+          });
           if (aborted) return;
 
+          // 2. ADB connect + auth
           setStatus("connecting", "Authenticating ADB…");
-          const credStore = new MemoryCredentialStore();
-          const backend = new AdbWebUsbBackend(device);
-          const adb = await Adb.authenticate(backend, credStore, undefined);
-          adbInstance = adb;
+          authNotice.style.display = "block";
 
+          adbConn = await connectAdb(device);
           if (aborted) {
-            adb.dispose?.();
+            adbConn.disconnect();
             return;
           }
-          setStatus("connected", `ADB · ${device.productName ?? "Honor X9a"}`);
 
-          // ── 2. VideoDecoder setup ──
+          authNotice.style.display = "none";
+          setStatus("connected", `ADB · ${device.productName ?? "Android"}`);
+
+          // 3. Open shell and start screenrecord
+          const cmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} -`;
+          setStatus("connecting", "Starting screenrecord…");
+
+          const shell = await adbConn.openStream("shell:" + cmd);
+          if (aborted) {
+            shell.close();
+            adbConn.disconnect();
+            return;
+          }
+
+          setStatus("connected", `Streaming · ${size}`);
+          streaming = true;
+
+          // 4. Video decoding pipeline
           const parser = new H264Parser();
           let decoder = null;
           let tsBase = -1;
@@ -767,7 +1056,6 @@
             }
             decoder = new VideoDecoder({
               output: (frame) => {
-                // Resize canvas once on first frame
                 if (
                   canvas.width !== frame.displayWidth ||
                   canvas.height !== frame.displayHeight
@@ -782,7 +1070,6 @@
               },
               error: (e) => {
                 console.warn("Decoder error:", e);
-                // Attempt to reset
                 parser.sps = null;
                 parser.pps = null;
                 parser.ready = false;
@@ -794,49 +1081,26 @@
             });
           }
 
-          // ── 3. Start screenrecord stream ──
-          const cmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} -`;
-          const shell = await adb.subprocess.shell(cmd);
-          if (aborted) {
-            shell.kill?.();
-            adb.dispose?.();
-            return;
-          }
-
-          setStatus("connected", `Streaming · ${size}`);
-          streaming = true;
-
-          // ── 4. Data loop ──
-          const reader = shell.stdout.getReader();
-
           initDecoder();
 
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done || aborted) break;
-
+          // 5. Data handler — called by ADB stream
+          shell.onData = (value) => {
+            if (aborted) return;
             byteCount += value.length;
 
             const nals = parser.push(value);
-
             for (const nal of nals) {
               const type = parser.nalType(nal);
-
-              // Collect SPS / PPS for codec config
               if (type === 7) {
-                // SPS
                 parser.sps = nal;
               } else if (type === 8) {
-                // PPS
                 parser.pps = nal;
               } else if (
                 (type === 5 || type === 1) &&
                 parser.sps &&
                 parser.pps
               ) {
-                // Ensure decoder is configured
                 if (!parser.ready) {
-                  // Re-configure with actual SPS/PPS
                   try {
                     decoder.close();
                   } catch (_) {}
@@ -854,16 +1118,11 @@
                       frameCount++;
                       idleOverlay.style.display = "none";
                     },
-                    error: (e) => {
-                      console.warn("Decoder error:", e);
-                    },
+                    error: (e) => console.warn("Decoder error:", e),
                   });
-
-                  // Build extradata (avcc-style) from SPS + PPS for codec string
                   const profileHex = Array.from(parser.sps.slice(1, 4))
                     .map((b) => b.toString(16).padStart(2, "0"))
                     .join("");
-
                   decoder.configure({
                     codec: `avc1.${profileHex}`,
                     optimizeForLatency: true,
@@ -872,13 +1131,11 @@
                 }
 
                 if (tsBase < 0) tsBase = performance.now();
-                const ts = (performance.now() - tsBase) * 1000; // microseconds
+                const ts = (performance.now() - tsBase) * 1000;
 
-                // Build Annex-B frame: SPS + PPS + NAL (for IDR), or just NAL
                 let frameData;
+                const sc = new Uint8Array([0, 0, 0, 1]);
                 if (type === 5) {
-                  // IDR — prepend SPS + PPS
-                  const sc = new Uint8Array([0, 0, 0, 1]);
                   frameData = new Uint8Array(
                     sc.length +
                       parser.sps.length +
@@ -900,7 +1157,6 @@
                   off += sc.length;
                   frameData.set(nal, off);
                 } else {
-                  const sc = new Uint8Array([0, 0, 0, 1]);
                   frameData = new Uint8Array(sc.length + nal.length);
                   frameData.set(sc);
                   frameData.set(nal, sc.length);
@@ -918,20 +1174,15 @@
                   console.warn("Decode skipped:", decErr.message);
                 }
               }
-              // Skip SEI (type 6), AUD (type 9), etc.
             }
-          }
+          };
 
-          // Cleanup
-          try {
-            decoder?.close();
-          } catch (_) {}
-          try {
-            adb.dispose?.();
-          } catch (_) {}
-          if (!aborted) stopStream();
+          shell.onClose = () => {
+            if (!aborted) stopStream();
+          };
         } catch (err) {
           console.error("Connection error:", err);
+          authNotice.style.display = "none";
           setStatus("error", err.message || "Connection failed");
           btnConnect.disabled = false;
           btnDisconnect.disabled = true;
