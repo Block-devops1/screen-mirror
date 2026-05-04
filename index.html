@@ -990,10 +990,14 @@
         };
 
         stopStream = () => {
+          // ── Instant UI update (paint frame) ──────────────────────────────
+          // Set flags first so any in-flight callbacks see aborted=true
           aborted = true;
-          clearWatchdog();
-          setStatus("", "Disconnected — plug in & click Connect Phone");
           streaming = false;
+          clearWatchdog();
+
+          // Update all UI synchronously so the button feels instant
+          setStatus("", "Disconnected — plug in & click Connect Phone");
           authNotice.style.display = "none";
           btnConnect.disabled = false;
           btnDisconnect.disabled = true;
@@ -1005,15 +1009,21 @@
           frameCount = 0;
           byteCount = 0;
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          adbConn?.disconnect();
-          // remove the USB disconnect listener if it exists
-          if (stopStream._usbHandler) {
-            navigator.usb.removeEventListener(
-              "disconnect",
-              stopStream._usbHandler,
-            );
-            stopStream._usbHandler = null;
-          }
+
+          // ── Heavy USB teardown deferred — fixes INP on Stop button ───────
+          // adbConn.disconnect() calls releaseInterface + device.close(), both
+          // of which block the main thread. Defer them so the browser can paint
+          // the updated UI first, then clean up.
+          const connToClose = adbConn;
+          const handlerToRemove = stopStream._usbHandler;
+          adbConn = null;
+          stopStream._usbHandler = null;
+          setTimeout(() => {
+            connToClose?.disconnect();
+            if (handlerToRemove) {
+              navigator.usb.removeEventListener("disconnect", handlerToRemove);
+            }
+          }, 0);
         };
         btnDisconnect.onclick = stopStream;
 
