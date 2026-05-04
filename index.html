@@ -878,84 +878,123 @@
       }
 
       // ── connectAdb ──
+      // MagicOS 7.1 behaviour: when Chrome claims the ADB interface the phone
+      // kernel does a USB re-enumeration (disconnect + reconnect). The original
+      // USBDevice object becomes stale (NotFoundError on any transfer). We must:
+      //   1. Catch that disconnect
+      //   2. Wait for the device to re-appear in navigator.usb.getDevices()
+      //   3. Re-open the fresh device object and continue the handshake
       async function connectAdb(device) {
-        await device.open();
-
-        // Must select configuration before scanning — some devices show empty
-        // interfaces list until a configuration is active.
-        try {
-          await device.selectConfiguration(1);
-        } catch (_) {}
-
-        // Find the ADB interface (class 0xff / subclass 0x42 / protocol 0x01)
-        let adbIntf = null,
-          adbAltIdx = 0,
-          adbAlt = null;
-        outer: for (const cfg of device.configurations)
-          for (const intf of cfg.interfaces)
-            for (let ai = 0; ai < intf.alternates.length; ai++) {
-              const alt = intf.alternates[ai];
-              if (
-                alt.interfaceClass === 0xff &&
-                alt.interfaceSubclass === 0x42 &&
-                alt.interfaceProtocol === 0x01
-              ) {
-                adbIntf = intf;
-                adbAlt = alt;
-                adbAltIdx = ai;
-                break outer;
-              }
-            }
-
-        if (!adbIntf || !adbAlt)
-          throw new Error("No ADB interface found — is USB Debugging enabled?");
-
-        // Claim THEN select alternate — without selectAlternateInterface the
-        // endpoint numbers exist in descriptors but are NOT live on the hardware,
-        // causing "endpoint not part of claimed interface" on transferOut/In.
-        try {
-          await device.claimInterface(adbIntf.interfaceNumber);
-        } catch (_) {}
-        try {
-          await device.selectAlternateInterface(
-            adbIntf.interfaceNumber,
-            adbAltIdx,
+        // ── Helper: wait for device to re-appear after re-enumeration ──
+        async function waitForReconnect(vendorId, productId, timeoutMs = 8000) {
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 300));
+            const devices = await navigator.usb.getDevices();
+            const found = devices.find(
+              (d) => d.vendorId === vendorId && d.productId === productId,
+            );
+            if (found) return found;
+          }
+          throw new Error(
+            "Device did not re-appear after USB re-enumeration — replug cable",
           );
-        } catch (_) {}
+        }
 
-        // Re-read endpoints from the live alternate after activation
-        let epIn = null,
-          epOut = null;
-        const liveIntf = device.configuration?.interfaces.find(
-          (i) => i.interfaceNumber === adbIntf.interfaceNumber,
-        );
-        const liveAlt =
-          liveIntf?.alternates.find((a) => a.alternateSetting === adbAltIdx) ??
-          adbAlt;
-        for (const ep of liveAlt.endpoints) {
-          if (ep.type === "bulk") {
-            if (ep.direction === "in") epIn = ep;
-            else epOut = ep;
+        // ── Helper: open + claim + configure one device object ──
+        async function openAndClaim(dev) {
+          // Close first in case it was left open from a previous attempt
+          try {
+            await dev.close();
+          } catch (_) {}
+          await dev.open();
+          try {
+            await dev.selectConfiguration(1);
+          } catch (_) {}
+
+          let adbIntf = null,
+            adbAltIdx = 0,
+            adbAlt = null;
+          outer: for (const cfg of dev.configurations)
+            for (const intf of cfg.interfaces)
+              for (let ai = 0; ai < intf.alternates.length; ai++) {
+                const alt = intf.alternates[ai];
+                if (
+                  alt.interfaceClass === 0xff &&
+                  alt.interfaceSubclass === 0x42 &&
+                  alt.interfaceProtocol === 0x01
+                ) {
+                  adbIntf = intf;
+                  adbAlt = alt;
+                  adbAltIdx = ai;
+                  break outer;
+                }
+              }
+
+          if (!adbIntf || !adbAlt)
+            throw new Error(
+              "No ADB interface — enable USB Debugging on the phone",
+            );
+
+          try {
+            await dev.claimInterface(adbIntf.interfaceNumber);
+          } catch (_) {}
+          try {
+            await dev.selectAlternateInterface(
+              adbIntf.interfaceNumber,
+              adbAltIdx,
+            );
+          } catch (_) {}
+
+          let epIn = null,
+            epOut = null;
+          const liveIntf = dev.configuration?.interfaces.find(
+            (i) => i.interfaceNumber === adbIntf.interfaceNumber,
+          );
+          const liveAlt =
+            liveIntf?.alternates.find(
+              (a) => a.alternateSetting === adbAltIdx,
+            ) ?? adbAlt;
+          for (const ep of liveAlt.endpoints) {
+            if (ep.type === "bulk") {
+              if (ep.direction === "in") epIn = ep;
+              else epOut = ep;
+            }
+          }
+          if (!epIn || !epOut)
+            throw new Error("ADB bulk endpoints not found — replug cable");
+
+          try {
+            await dev.clearHalt("in", epIn.endpointNumber);
+          } catch (_) {}
+          try {
+            await dev.clearHalt("out", epOut.endpointNumber);
+          } catch (_) {}
+          await new Promise((r) => setTimeout(r, 200));
+
+          return { dev, adbIntf, epIn, epOut };
+        }
+
+        // ── First open attempt ──
+        let claimed;
+        try {
+          claimed = await openAndClaim(device);
+        } catch (e) {
+          // NotFoundError = MagicOS re-enumerated the device — wait and retry
+          if (e.name === "NotFoundError" || e.name === "NetworkError") {
+            setStatus("connecting", "USB re-enumeration detected — waiting…");
+            const fresh = await waitForReconnect(
+              device.vendorId,
+              device.productId,
+            );
+            claimed = await openAndClaim(fresh);
+          } else {
+            throw e;
           }
         }
-        if (!epIn || !epOut)
-          throw new Error(
-            "ADB bulk endpoints not found — replug the cable and retry",
-          );
 
-        // Clear any stale data on both endpoints (Honor/MagicOS leaves endpoints
-        // in a halted state from previous sessions — clearHalt un-stalls them).
-        try {
-          await device.clearHalt("in", epIn.endpointNumber);
-        } catch (_) {}
-        try {
-          await device.clearHalt("out", epOut.endpointNumber);
-        } catch (_) {}
-        // Small settle delay — Honor USB controller needs ~150ms after clearHalt
-        // before the first transferOut succeeds without a NetworkError.
-        await new Promise((r) => setTimeout(r, 150));
-
-        const conn = new AdbConnection(device, adbIntf, epIn, epOut);
+        const { dev: liveDevice, adbIntf, epIn, epOut } = claimed;
+        const conn = new AdbConnection(liveDevice, adbIntf, epIn, epOut);
         const keyPair = await generateAdbKey();
 
         await new Promise((resolve, reject) => {
@@ -1112,12 +1151,9 @@
           }
           if (aborted) return;
 
-          // Listen for physical USB unplug and stop cleanly
-          const usbDisconnectHandler = (evt) => {
-            if (evt.device === device) stopStream();
-          };
-          navigator.usb.addEventListener("disconnect", usbDisconnectHandler);
-          stopStream._usbHandler = usbDisconnectHandler;
+          // USB disconnect handler is set after connectAdb resolves,
+          // because MagicOS may re-enumerate the device during claim.
+          stopStream._usbHandler = null;
 
           setStatus("connecting", "Authenticating ADB…");
           authNotice.style.display = "block";
@@ -1128,8 +1164,24 @@
             return;
           }
 
+          // After connectAdb, liveDevice may differ from `device` if MagicOS
+          // re-enumerated — update the disconnect listener to track the live device.
+          const liveDevice = adbConn.device;
+          navigator.usb.removeEventListener(
+            "disconnect",
+            stopStream._usbHandler,
+          );
+          const liveDisconnectHandler = (evt) => {
+            if (evt.device === liveDevice) stopStream();
+          };
+          navigator.usb.addEventListener("disconnect", liveDisconnectHandler);
+          stopStream._usbHandler = liveDisconnectHandler;
+
           authNotice.style.display = "none";
-          setStatus("connected", `ADB · ${device.productName ?? "Android"}`);
+          setStatus(
+            "connected",
+            `ADB · ${liveDevice.productName ?? "Android"}`,
+          );
 
           const qualVal = qualitySelect.value;
           const isScreencapMode = qualVal === "screencap";
