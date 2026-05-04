@@ -9,7 +9,6 @@
       href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-
     <style>
       :root {
         --bg: #060608;
@@ -23,7 +22,6 @@
         --text: #d4cfc8;
         --muted: #5a5750;
       }
-
       *,
       *::before,
       *::after {
@@ -31,7 +29,6 @@
         margin: 0;
         padding: 0;
       }
-
       body {
         background: var(--bg);
         color: var(--text);
@@ -42,7 +39,6 @@
         overflow: hidden;
       }
 
-      /* ── Header ── */
       header {
         display: flex;
         align-items: center;
@@ -54,7 +50,6 @@
         gap: 12px;
         flex-wrap: wrap;
       }
-
       .logo {
         display: flex;
         align-items: center;
@@ -80,7 +75,6 @@
         color: var(--amber);
       }
 
-      /* Status pill */
       #status-pill {
         display: flex;
         align-items: center;
@@ -94,7 +88,7 @@
         letter-spacing: 0.03em;
         color: var(--muted);
         transition: all 0.3s;
-        max-width: 280px;
+        max-width: 320px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -130,7 +124,6 @@
       #status-pill.connecting #status-dot {
         background: var(--amber);
       }
-
       @keyframes pulse {
         0%,
         100% {
@@ -141,14 +134,12 @@
         }
       }
 
-      /* Controls */
       .controls {
         display: flex;
         align-items: center;
         gap: 8px;
         flex-wrap: wrap;
       }
-
       button {
         font-family: "Syne", sans-serif;
         font-weight: 700;
@@ -169,7 +160,6 @@
         cursor: not-allowed;
         transform: none;
       }
-
       #btn-connect {
         background: var(--amber);
         color: #000;
@@ -204,7 +194,6 @@
       #btn-fullscreen:hover {
         background: #1a1b22;
       }
-
       select {
         background: #13141a;
         color: var(--text);
@@ -220,7 +209,6 @@
         border-color: var(--amber-dim);
       }
 
-      /* ── Display Area ── */
       #display-container {
         flex: 1;
         display: flex;
@@ -250,7 +238,6 @@
         display: block;
         transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
       }
-
       #idle-overlay {
         position: absolute;
         inset: 0;
@@ -275,7 +262,6 @@
         letter-spacing: 0.05em;
       }
 
-      /* ── Footer Stats ── */
       #stats-bar {
         display: flex;
         gap: 20px;
@@ -304,7 +290,6 @@
         color: var(--amber);
       }
 
-      /* ── Setup Guide ── */
       #setup-panel {
         position: fixed;
         inset: 0;
@@ -407,7 +392,6 @@
         letter-spacing: 0.05em;
       }
 
-      /* ── Auth prompt ── */
       #auth-notice {
         display: none;
         position: absolute;
@@ -438,9 +422,7 @@
       }
     </style>
   </head>
-
   <body>
-    <!-- Setup Guide Overlay -->
     <div id="setup-panel">
       <div class="setup-card">
         <h2>Before You Connect</h2>
@@ -471,7 +453,7 @@
           <div class="step-num">4</div>
           <div class="step-text">
             Click <code>CONNECT PHONE</code>, select your device, then
-            <strong>approve the ADB prompt</strong> on your phone screen.
+            <strong>tap Allow</strong> on your phone screen if prompted.
           </div>
         </div>
         <div class="setup-actions">
@@ -481,7 +463,6 @@
       </div>
     </div>
 
-    <!-- Header -->
     <header>
       <div class="logo">
         <div class="logo-icon">▶</div>
@@ -498,21 +479,20 @@
           <option value="960x540,2000000">540p / 2 Mbps (low lag)</option>
           <option value="640x360,1000000">360p / 1 Mbps (fastest)</option>
         </select>
-        <button id="btn-rotate" title="Rotate view">↻ Rotate</button>
-        <button id="btn-fullscreen" title="Fullscreen">⛶</button>
+        <button id="btn-rotate">↻ Rotate</button>
+        <button id="btn-fullscreen">⛶</button>
         <button id="btn-disconnect" disabled>■ Stop</button>
         <button id="btn-connect">⚡ Connect Phone</button>
       </div>
     </header>
 
-    <!-- Main Display -->
     <div id="display-container">
       <canvas id="display" width="1280" height="720"></canvas>
       <div id="idle-overlay">
         <div class="idle-icon">📱</div>
         <div class="idle-text">
-          NO SIGNAL — USB CABLE REQUIRED<br />
-          Connect your Android and click <strong>Connect Phone</strong>
+          NO SIGNAL — USB CABLE REQUIRED<br />Connect your Android and click
+          <strong>Connect Phone</strong>
         </div>
       </div>
       <div id="auth-notice">
@@ -520,7 +500,6 @@
       </div>
     </div>
 
-    <!-- Stats Bar -->
     <div id="stats-bar">
       <div class="stat">
         <span class="stat-label">RES</span
@@ -545,16 +524,35 @@
     </div>
 
     <script>
-      // ═══════════════════════════════════════════════════════════════════
-      //  VLC Phone Mirror — Native WebUSB ADB (zero dependencies, offline)
+      // ════════════════════════════════════════════════════════════════════════
+      //  VLC Phone Mirror  —  Native WebUSB ADB, zero dependencies, offline
       //
-      //  FIX 1: DOM refs are grabbed FIRST (before any async work), so
-      //          setStatus() never throws "before initialization".
-      //  FIX 2: Removed all CDN imports — uses the native WebUSB ADB
-      //          protocol implemented below, so no internet is ever needed.
-      // ═══════════════════════════════════════════════════════════════════
+      //  HANDSHAKE BUG FIXES (v3):
+      //
+      //  FIX 1 — _readLoop no longer auto-starts in constructor.
+      //           Previously it started immediately and consumed the first
+      //           AUTH_TOKEN packet before connectAdb() had set up a handler,
+      //           so the packet was silently dropped → immediate timeout.
+      //           Now: startReadLoop() is called AFTER the auth handler is set.
+      //
+      //  FIX 2 — Auth now handles TWO rounds of AUTH_TOKEN correctly:
+      //           • Round 1 → send RSA signature (fast path if already trusted)
+      //           • Round 2 → phone rejects sig, sends another AUTH_TOKEN;
+      //                       we send AUTH_RSAPUBLICKEY + wait for user to
+      //                       tap "Allow" on the phone screen.
+      //           Old code sent pubkey only if crypto.subtle.sign() threw,
+      //           which it never does, so first-time auth was broken.
+      //
+      //  FIX 3 — MAX_PAYLOAD is now 256 KB (standard ADB value).
+      //           1 MB caused some devices to reject CNXN.
+      //
+      //  FIX 4 — USB reads always request 65536 bytes (large aligned buffer).
+      //           Asking for tiny reads (e.g. 3 bytes) on a bulk endpoint
+      //           stalls ChromeOS USB. We accumulate in a byte buffer and
+      //           parse complete ADB messages out of it.
+      // ════════════════════════════════════════════════════════════════════════
 
-      // ─── DOM Refs (must come first — setStatus uses these) ───
+      // ── DOM refs first ──
       const canvas = document.getElementById("display");
       const ctx = canvas.getContext("2d");
       const idleOverlay = document.getElementById("idle-overlay");
@@ -572,26 +570,22 @@
       const statData = document.getElementById("stat-data");
       const statRotate = document.getElementById("stat-rotate");
 
-      // ─── Setup panel ───
       document.getElementById("btn-got-it").onclick = () =>
         setupPanel.classList.add("hidden");
       document.getElementById("btn-skip").onclick = () =>
         setupPanel.classList.add("hidden");
 
-      // ─── Status helper ───
       function setStatus(state, msg) {
-        statusPill.className = state; // 'connecting' | 'connected' | 'error' | ''
+        statusPill.className = state;
         statusText.textContent = msg;
       }
 
-      // ─── State ───
-      let angle = 0;
-      let frameCount = 0;
-      let byteCount = 0;
-      let streaming = false;
-      let stopStream = null;
+      let angle = 0,
+        frameCount = 0,
+        byteCount = 0,
+        streaming = false,
+        stopStream = null;
 
-      // ─── Stats update ───
       setInterval(() => {
         if (!streaming) return;
         statFrames.textContent = frameCount + " frames";
@@ -600,7 +594,6 @@
         statData.classList.add("active");
       }, 1000);
 
-      // ─── Rotate ───
       btnRotate.onclick = () => {
         angle = (angle + 90) % 360;
         canvas.style.transform = `rotate(${angle}deg)`;
@@ -608,16 +601,13 @@
         statRotate.classList.toggle("active", angle !== 0);
       };
 
-      // ─── Fullscreen ───
       btnFullscreen.onclick = () => {
-        const container = document.getElementById("display-container");
-        if (!document.fullscreenElement) container.requestFullscreen?.();
+        const c = document.getElementById("display-container");
+        if (!document.fullscreenElement) c.requestFullscreen?.();
         else document.exitFullscreen?.();
       };
 
-      // ═══════════════════════════════════════════════════════════════════
-      //  H.264 Annex-B NAL Unit Parser
-      // ═══════════════════════════════════════════════════════════════════
+      // ── H.264 Annex-B NAL parser ──
       class H264Parser {
         constructor() {
           this.buf = new Uint8Array(0);
@@ -625,96 +615,77 @@
           this.pps = null;
           this.ready = false;
         }
-
-        push(incoming) {
-          const merged = new Uint8Array(this.buf.length + incoming.length);
-          merged.set(this.buf);
-          merged.set(incoming, this.buf.length);
-          this.buf = merged;
+        push(inc) {
+          const m = new Uint8Array(this.buf.length + inc.length);
+          m.set(this.buf);
+          m.set(inc, this.buf.length);
+          this.buf = m;
           return this._extract();
         }
-
         _extract() {
-          const out = [];
-          const d = this.buf;
+          const out = [],
+            d = this.buf;
           let prev = -1;
-          const startOf = (i) =>
+          const sc = (i) =>
             d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 0 && d[i + 3] === 1
               ? 4
               : d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 1
                 ? 3
                 : 0;
-
           for (let i = 0; i < d.length - 3; i++) {
-            const scLen = startOf(i);
-            if (scLen > 0) {
+            const s = sc(i);
+            if (s) {
               if (prev >= 0) out.push(d.slice(prev, i));
-              prev = i + scLen;
-              i += scLen - 1;
+              prev = i + s;
+              i += s - 1;
             }
           }
           this.buf = prev >= 0 ? d.slice(prev) : d;
           return out;
         }
-
         nalType(nal) {
           return nal[0] & 0x1f;
         }
-        isKeyframe(nal) {
-          return this.nalType(nal) === 5;
-        }
       }
 
-      // ═══════════════════════════════════════════════════════════════════
-      //  Native ADB-over-WebUSB (no library needed)
-      //
-      //  Implements the ADB wire protocol:
-      //  https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/master/protocol.txt
-      // ═══════════════════════════════════════════════════════════════════
-
-      const A_CNXN = 0x4e584e43;
-      const A_AUTH = 0x48545541;
-      const A_OPEN = 0x4e45504f;
-      const A_OKAY = 0x59414b4f;
-      const A_CLSE = 0x45534c43;
-      const A_WRTE = 0x45545257;
-
+      // ── ADB protocol constants ──
+      const A_CNXN = 0x4e584e43,
+        A_AUTH = 0x48545541,
+        A_OPEN = 0x4e45504f;
+      const A_OKAY = 0x59414b4f,
+        A_CLSE = 0x45534c43,
+        A_WRTE = 0x45545257;
       const ADB_VERSION = 0x01000001;
-      const MAX_PAYLOAD = 1024 * 1024;
-      const AUTH_TOKEN = 1;
-      const AUTH_SIGNATURE = 2;
-      const AUTH_RSAPUBLICKEY = 3;
+      const MAX_PAYLOAD = 256 * 1024; // FIX 3
+      const AUTH_TOKEN = 1,
+        AUTH_SIGNATURE = 2,
+        AUTH_RSAPUBLICKEY = 3;
+      const enc = (s) => new TextEncoder().encode(s);
 
-      function encodeUtf8(str) {
-        return new TextEncoder().encode(str);
-      }
-      function decodeUtf8(buf) {
-        return new TextDecoder().decode(buf);
-      }
-
-      function makeMessage(cmd, arg0, arg1, data) {
-        const dataBytes =
+      function makeMsg(cmd, arg0, arg1, data) {
+        const b =
           data instanceof Uint8Array
             ? data
             : data
-              ? encodeUtf8(data)
+              ? enc(data)
               : new Uint8Array(0);
-        const dataLen = dataBytes.length;
-        const checksum = dataBytes.reduce((s, b) => (s + b) & 0xffffffff, 0);
-        const magic = (cmd ^ 0xffffffff) >>> 0;
-
-        const buf = new ArrayBuffer(24 + dataLen);
+        const buf = new ArrayBuffer(24 + b.length);
         const dv = new DataView(buf);
         dv.setUint32(0, cmd, true);
         dv.setUint32(4, arg0, true);
         dv.setUint32(8, arg1, true);
-        dv.setUint32(12, dataLen, true);
-        dv.setUint32(16, checksum, true);
-        dv.setUint32(20, magic, true);
-        new Uint8Array(buf, 24).set(dataBytes);
+        dv.setUint32(12, b.length, true);
+        dv.setUint32(
+          16,
+          b.reduce((s, x) => (s + x) & 0xffffffff, 0),
+          true,
+        );
+        dv.setUint32(20, (cmd ^ 0xffffffff) >>> 0, true);
+        new Uint8Array(buf, 24).set(b);
         return new Uint8Array(buf);
       }
 
+      // ── AdbConnection (FIX 1: read loop not auto-started) ──
       class AdbConnection {
         constructor(device, intf, epIn, epOut) {
           this.device = device;
@@ -722,85 +693,84 @@
           this.epIn = epIn;
           this.epOut = epOut;
           this._localId = 1;
-          this._streams = new Map(); // localId -> { resolve, reject, chunks }
-          this._readLoop();
+          this._streams = new Map();
+          this._rxBuf = new Uint8Array(0);
+          this._closed = false;
+          this._onMessage = null; // set externally before startReadLoop()
         }
 
         async _send(data) {
           await this.device.transferOut(this.epOut.endpointNumber, data);
         }
 
-        async _readLoop() {
-          while (true) {
+        _append(chunk) {
+          const m = new Uint8Array(this._rxBuf.length + chunk.length);
+          m.set(this._rxBuf);
+          m.set(chunk, this._rxBuf.length);
+          this._rxBuf = m;
+        }
+
+        _tryParse() {
+          if (this._rxBuf.length < 24) return null;
+          const dv = new DataView(this._rxBuf.buffer, this._rxBuf.byteOffset);
+          const dataLen = dv.getUint32(12, true);
+          if (this._rxBuf.length < 24 + dataLen) return null;
+          const msg = {
+            cmd: dv.getUint32(0, true),
+            arg0: dv.getUint32(4, true),
+            arg1: dv.getUint32(8, true),
+            data: this._rxBuf.slice(24, 24 + dataLen),
+          };
+          this._rxBuf = this._rxBuf.slice(24 + dataLen);
+          return msg;
+        }
+
+        // FIX 1 + FIX 4: called manually after auth handler is wired up; reads 64K chunks
+        async startReadLoop() {
+          while (!this._closed) {
             try {
-              // Read header (24 bytes)
-              let headerBuf = new Uint8Array(0);
-              while (headerBuf.length < 24) {
-                const r = await this.device.transferIn(
-                  this.epIn.endpointNumber,
-                  24 - headerBuf.length,
+              const r = await this.device.transferIn(
+                this.epIn.endpointNumber,
+                65536,
+              );
+              if (r.data && r.data.byteLength > 0)
+                this._append(
+                  new Uint8Array(
+                    r.data.buffer,
+                    r.data.byteOffset,
+                    r.data.byteLength,
+                  ),
                 );
-                if (!r.data || r.data.byteLength === 0) break;
-                const chunk = new Uint8Array(r.data.buffer);
-                const merged = new Uint8Array(headerBuf.length + chunk.length);
-                merged.set(headerBuf);
-                merged.set(chunk, headerBuf.length);
-                headerBuf = merged;
+              let msg;
+              while ((msg = this._tryParse()) !== null) {
+                if (this._onMessage) this._onMessage(msg);
               }
-              if (headerBuf.length < 24) break;
-
-              const dv = new DataView(headerBuf.buffer);
-              const cmd = dv.getUint32(0, true);
-              const arg0 = dv.getUint32(4, true);
-              const arg1 = dv.getUint32(8, true);
-              const dataLen = dv.getUint32(12, true);
-
-              // Read data payload
-              let data = new Uint8Array(0);
-              let remaining = dataLen;
-              while (remaining > 0) {
-                const r = await this.device.transferIn(
-                  this.epIn.endpointNumber,
-                  Math.min(remaining, 16384),
-                );
-                if (!r.data || r.data.byteLength === 0) break;
-                const chunk = new Uint8Array(r.data.buffer);
-                const merged = new Uint8Array(data.length + chunk.length);
-                merged.set(data);
-                merged.set(chunk, data.length);
-                data = merged;
-                remaining -= chunk.length;
-              }
-
-              this._dispatch(cmd, arg0, arg1, data);
             } catch (e) {
-              // Connection closed
-              for (const [, stream] of this._streams) {
-                stream.reject?.(e);
-              }
+              if (!this._closed)
+                for (const [, s] of this._streams) s.reject?.(e);
               break;
             }
           }
         }
 
-        _dispatch(cmd, arg0, arg1, data) {
+        _dispatch(msg) {
+          const { cmd, arg0, arg1, data } = msg;
           if (cmd === A_WRTE) {
-            const stream = this._streams.get(arg1);
-            if (stream) {
-              stream.onData?.(data);
-              // Send OKAY ack
-              this._send(makeMessage(A_OKAY, arg1, arg0, null));
+            const s = this._streams.get(arg1);
+            if (s) {
+              s.onData?.(data);
+              this._send(makeMsg(A_OKAY, arg1, arg0, null));
             }
           } else if (cmd === A_OKAY) {
-            const stream = this._streams.get(arg0);
-            if (stream && !stream.remoteId) {
-              stream.remoteId = arg1;
-              stream.resolve?.(stream);
+            const s = this._streams.get(arg0);
+            if (s && !s.remoteId) {
+              s.remoteId = arg1;
+              s.resolve?.(s);
             }
           } else if (cmd === A_CLSE) {
-            const stream = this._streams.get(arg1);
-            if (stream) {
-              stream.onClose?.();
+            const s = this._streams.get(arg1);
+            if (s) {
+              s.onClose?.();
               this._streams.delete(arg1);
             }
           }
@@ -809,33 +779,31 @@
         async openStream(service) {
           const localId = this._localId++;
           return new Promise((resolve, reject) => {
-            const stream = {
+            const s = {
               localId,
               remoteId: null,
               resolve,
               reject,
               onData: null,
               onClose: null,
-              write: async (data) => {
-                const bytes =
-                  data instanceof Uint8Array ? data : encodeUtf8(data);
-                await this._send(
-                  makeMessage(A_WRTE, localId, stream.remoteId, bytes),
-                );
+              write: async (d) => {
+                const b = d instanceof Uint8Array ? d : enc(d);
+                await this._send(makeMsg(A_WRTE, localId, s.remoteId, b));
               },
               close: async () => {
                 await this._send(
-                  makeMessage(A_CLSE, localId, stream.remoteId || 0, null),
+                  makeMsg(A_CLSE, localId, s.remoteId || 0, null),
                 );
                 this._streams.delete(localId);
               },
             };
-            this._streams.set(localId, stream);
-            this._send(makeMessage(A_OPEN, localId, 0, service + "\0"));
+            this._streams.set(localId, s);
+            this._send(makeMsg(A_OPEN, localId, 0, service + "\0"));
           });
         }
 
         async disconnect() {
+          this._closed = true;
           try {
             await this.device.releaseInterface(this.intf.interfaceNumber);
           } catch (_) {}
@@ -845,9 +813,9 @@
         }
       }
 
-      // RSA key generation & ADB public key format
+      // ── Crypto helpers ──
       async function generateAdbKey() {
-        const key = await crypto.subtle.generateKey(
+        return crypto.subtle.generateKey(
           {
             name: "RSASSA-PKCS1-v1_5",
             modulusLength: 2048,
@@ -857,120 +825,111 @@
           true,
           ["sign", "verify"],
         );
-        return key;
       }
-
-      async function signToken(keyPair, token) {
-        const sig = await crypto.subtle.sign(
-          "RSASSA-PKCS1-v1_5",
-          keyPair.privateKey,
-          token,
+      async function signToken(kp, token) {
+        return new Uint8Array(
+          await crypto.subtle.sign("RSASSA-PKCS1-v1_5", kp.privateKey, token),
         );
-        return new Uint8Array(sig);
       }
-
-      async function exportAdbPublicKey(keyPair) {
-        // Export RSA public key in ADB's custom format (RSAPublicKey struct + base64 + host string)
-        const exported = await crypto.subtle.exportKey(
-          "spki",
-          keyPair.publicKey,
+      async function exportAdbPublicKey(kp) {
+        const spki = await crypto.subtle.exportKey("spki", kp.publicKey);
+        return enc(
+          btoa(String.fromCharCode(...new Uint8Array(spki))) + " VLCMirror\0",
         );
-        const b64 = btoa(String.fromCharCode(...new Uint8Array(exported)));
-        return encodeUtf8(b64 + " VLCMirror\0");
       }
 
+      // ── connectAdb: FIX 1 (handler before readLoop) + FIX 2 (two-round auth) ──
       async function connectAdb(device) {
         await device.open();
 
-        // Find ADB interface (class 0xFF, subclass 0x42, protocol 0x01)
         let adbIntf = null,
           epIn = null,
           epOut = null;
-        for (const cfg of device.configurations) {
-          for (const intf of cfg.interfaces) {
-            for (const alt of intf.alternates) {
+        outer: for (const cfg of device.configurations)
+          for (const intf of cfg.interfaces)
+            for (const alt of intf.alternates)
               if (
                 alt.interfaceClass === 0xff &&
                 alt.interfaceSubclass === 0x42 &&
                 alt.interfaceProtocol === 0x01
               ) {
                 adbIntf = intf;
-                for (const ep of alt.endpoints) {
+                for (const ep of alt.endpoints)
                   if (ep.type === "bulk") {
                     if (ep.direction === "in") epIn = ep;
-                    if (ep.direction === "out") epOut = ep;
+                    else epOut = ep;
                   }
-                }
+                break outer;
               }
-            }
-          }
-        }
 
         if (!adbIntf || !epIn || !epOut)
-          throw new Error("No ADB interface found. Is USB Debugging enabled?");
+          throw new Error("No ADB interface found — is USB Debugging enabled?");
 
         await device.selectConfiguration(1);
         await device.claimInterface(adbIntf.interfaceNumber);
 
         const conn = new AdbConnection(device, adbIntf, epIn, epOut);
-
-        // Send CONNECT
-        const systemId = "host::VLCMirror";
-        await conn._send(
-          makeMessage(A_CNXN, ADB_VERSION, MAX_PAYLOAD, systemId),
-        );
-
-        // Wait for AUTH or CNXN response
         const keyPair = await generateAdbKey();
 
         await new Promise((resolve, reject) => {
+          // 30 s — long enough for user to see and tap the phone prompt
           const timeout = setTimeout(
-            () => reject(new Error("ADB handshake timeout")),
-            10000,
+            () =>
+              reject(
+                new Error(
+                  "ADB handshake timeout — make sure you tapped Allow on the phone",
+                ),
+              ),
+            30000,
           );
 
-          // Patch dispatch to handle AUTH handshake
-          const origDispatch = conn._dispatch.bind(conn);
-          conn._dispatch = async (cmd, arg0, arg1, data) => {
-            if (cmd === A_AUTH) {
-              if (arg0 === AUTH_TOKEN) {
-                // Try signature first
-                try {
-                  const sig = await signToken(keyPair, data);
-                  await conn._send(makeMessage(A_AUTH, AUTH_SIGNATURE, 0, sig));
-                } catch (e) {
-                  // Send public key so user can approve on phone
+          let authRound = 0;
+
+          // FIX 1: assign handler BEFORE startReadLoop so no packet is missed
+          conn._onMessage = async (msg) => {
+            try {
+              if (msg.cmd === A_AUTH && msg.arg0 === AUTH_TOKEN) {
+                authRound++;
+                if (authRound === 1) {
+                  // Round 1: try RSA signature — works instantly if key is already trusted
+                  const sig = await signToken(keyPair, msg.data);
+                  await conn._send(makeMsg(A_AUTH, AUTH_SIGNATURE, 0, sig));
+                } else {
+                  // FIX 2: Round 2 — phone rejected our sig, demands public key
+                  // User will see an Allow prompt on the phone screen
                   const pubkey = await exportAdbPublicKey(keyPair);
                   await conn._send(
-                    makeMessage(A_AUTH, AUTH_RSAPUBLICKEY, 0, pubkey),
+                    makeMsg(A_AUTH, AUTH_RSAPUBLICKEY, 0, pubkey),
                   );
+                  // Now just wait — phone sends CNXN once user taps Allow
                 }
+              } else if (msg.cmd === A_CNXN) {
+                // Handshake complete
+                clearTimeout(timeout);
+                conn._onMessage = (m) => conn._dispatch(m); // switch to normal handler
+                resolve();
               }
-            } else if (cmd === A_CNXN) {
+            } catch (e) {
               clearTimeout(timeout);
-              conn._dispatch = origDispatch;
-              resolve();
-            } else {
-              origDispatch(cmd, arg0, arg1, data);
+              reject(e);
             }
           };
 
-          // If device sends CNXN immediately (already trusted), also resolve
-          conn._streams.set(-1, {
-            resolve: () => {
-              clearTimeout(timeout);
-              resolve();
-            },
-            reject,
-          });
+          // FIX 1: Start read loop NOW, after handler is in place
+          conn.startReadLoop(); // background task, intentionally not awaited
+
+          // Kick off the handshake
+          conn
+            ._send(
+              makeMsg(A_CNXN, ADB_VERSION, MAX_PAYLOAD, "host::VLCMirror\0"),
+            )
+            .catch(reject);
         });
 
         return conn;
       }
 
-      // ═══════════════════════════════════════════════════════════════════
-      //  Main Connect Button
-      // ═══════════════════════════════════════════════════════════════════
+      // ── Connect button ──
       btnConnect.onclick = async () => {
         if (!navigator.usb) {
           setStatus("error", "WebUSB not supported — use Chrome/Chromium");
@@ -984,8 +943,8 @@
         btnConnect.disabled = true;
         btnDisconnect.disabled = false;
 
-        let aborted = false;
-        let adbConn = null;
+        let aborted = false,
+          adbConn = null;
 
         stopStream = () => {
           aborted = true;
@@ -1007,7 +966,6 @@
         btnDisconnect.onclick = stopStream;
 
         try {
-          // 1. Request USB device
           setStatus("connecting", "Select your Android device…");
           const device = await navigator.usb.requestDevice({
             filters: [
@@ -1016,7 +974,6 @@
           });
           if (aborted) return;
 
-          // 2. ADB connect + auth
           setStatus("connecting", "Authenticating ADB…");
           authNotice.style.display = "block";
 
@@ -1029,10 +986,8 @@
           authNotice.style.display = "none";
           setStatus("connected", `ADB · ${device.productName ?? "Android"}`);
 
-          // 3. Open shell and start screenrecord
           const cmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} -`;
           setStatus("connecting", "Starting screenrecord…");
-
           const shell = await adbConn.openStream("shell:" + cmd);
           if (aborted) {
             shell.close();
@@ -1043,12 +998,11 @@
           setStatus("connected", `Streaming · ${size}`);
           streaming = true;
 
-          // 4. Video decoding pipeline
           const parser = new H264Parser();
-          let decoder = null;
-          let tsBase = -1;
+          let decoder = null,
+            tsBase = -1;
 
-          function initDecoder() {
+          function makeDecoder() {
             if (decoder) {
               try {
                 decoder.close();
@@ -1069,7 +1023,7 @@
                 idleOverlay.style.display = "none";
               },
               error: (e) => {
-                console.warn("Decoder error:", e);
+                console.warn("Decoder:", e);
                 parser.sps = null;
                 parser.pps = null;
                 parser.ready = false;
@@ -1080,14 +1034,11 @@
               optimizeForLatency: true,
             });
           }
+          makeDecoder();
 
-          initDecoder();
-
-          // 5. Data handler — called by ADB stream
           shell.onData = (value) => {
             if (aborted) return;
             byteCount += value.length;
-
             const nals = parser.push(value);
             for (const nal of nals) {
               const type = parser.nalType(nal);
@@ -1118,25 +1069,23 @@
                       frameCount++;
                       idleOverlay.style.display = "none";
                     },
-                    error: (e) => console.warn("Decoder error:", e),
+                    error: (e) => console.warn("Decoder:", e),
                   });
-                  const profileHex = Array.from(parser.sps.slice(1, 4))
+                  const ph = Array.from(parser.sps.slice(1, 4))
                     .map((b) => b.toString(16).padStart(2, "0"))
                     .join("");
                   decoder.configure({
-                    codec: `avc1.${profileHex}`,
+                    codec: `avc1.${ph}`,
                     optimizeForLatency: true,
                   });
                   parser.ready = true;
                 }
-
                 if (tsBase < 0) tsBase = performance.now();
                 const ts = (performance.now() - tsBase) * 1000;
-
-                let frameData;
                 const sc = new Uint8Array([0, 0, 0, 1]);
+                let fd;
                 if (type === 5) {
-                  frameData = new Uint8Array(
+                  fd = new Uint8Array(
                     sc.length +
                       parser.sps.length +
                       sc.length +
@@ -1144,34 +1093,33 @@
                       sc.length +
                       nal.length,
                   );
-                  let off = 0;
-                  frameData.set(sc, off);
-                  off += sc.length;
-                  frameData.set(parser.sps, off);
-                  off += parser.sps.length;
-                  frameData.set(sc, off);
-                  off += sc.length;
-                  frameData.set(parser.pps, off);
-                  off += parser.pps.length;
-                  frameData.set(sc, off);
-                  off += sc.length;
-                  frameData.set(nal, off);
+                  let o = 0;
+                  fd.set(sc, o);
+                  o += sc.length;
+                  fd.set(parser.sps, o);
+                  o += parser.sps.length;
+                  fd.set(sc, o);
+                  o += sc.length;
+                  fd.set(parser.pps, o);
+                  o += parser.pps.length;
+                  fd.set(sc, o);
+                  o += sc.length;
+                  fd.set(nal, o);
                 } else {
-                  frameData = new Uint8Array(sc.length + nal.length);
-                  frameData.set(sc);
-                  frameData.set(nal, sc.length);
+                  fd = new Uint8Array(sc.length + nal.length);
+                  fd.set(sc);
+                  fd.set(nal, sc.length);
                 }
-
                 try {
                   decoder.decode(
                     new EncodedVideoChunk({
                       type: type === 5 ? "key" : "delta",
                       timestamp: ts,
-                      data: frameData,
+                      data: fd,
                     }),
                   );
-                } catch (decErr) {
-                  console.warn("Decode skipped:", decErr.message);
+                } catch (e) {
+                  console.warn("Decode skip:", e.message);
                 }
               }
             }
