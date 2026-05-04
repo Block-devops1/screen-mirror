@@ -492,7 +492,8 @@
         <div class="idle-icon">📱</div>
         <div class="idle-text">
           NO SIGNAL — USB CABLE REQUIRED<br />Connect your Android and click
-          <strong>Connect Phone</strong>
+          <strong>Connect Phone</strong><br />Keep your phone screen unlocked
+          &amp; on!
         </div>
       </div>
       <div id="auth-notice">
@@ -986,8 +987,12 @@
           authNotice.style.display = "none";
           setStatus("connected", `ADB · ${device.productName ?? "Android"}`);
 
-          const cmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} -`;
-          setStatus("connecting", "Starting screenrecord…");
+          // --time-limit 0 = unlimited (default 180s causes silent stop)
+          const cmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} --time-limit 0 -`;
+          setStatus(
+            "connecting",
+            "Starting screenrecord… (keep screen unlocked!)",
+          );
           const shell = await adbConn.openStream("shell:" + cmd);
           if (aborted) {
             shell.close();
@@ -995,8 +1000,22 @@
             return;
           }
 
-          setStatus("connected", `Streaming · ${size}`);
+          setStatus(
+            "connecting",
+            "Waiting for first frame… (screen must stay on)",
+          );
           streaming = true;
+
+          // Watchdog: if no frames arrive in 10 s, show a helpful error
+          let firstFrameReceived = false;
+          const watchdog = setTimeout(() => {
+            if (!firstFrameReceived && !aborted) {
+              setStatus(
+                "error",
+                "No frames — screen locked? Try unlocking phone & reconnecting",
+              );
+            }
+          }, 10000);
 
           const parser = new H264Parser();
           let decoder = null,
@@ -1021,6 +1040,11 @@
                 frame.close();
                 frameCount++;
                 idleOverlay.style.display = "none";
+                if (!firstFrameReceived) {
+                  firstFrameReceived = true;
+                  clearTimeout(watchdog);
+                  setStatus("connected", `Streaming · ${size}`);
+                }
               },
               error: (e) => {
                 console.warn("Decoder:", e);
@@ -1068,6 +1092,11 @@
                       frame.close();
                       frameCount++;
                       idleOverlay.style.display = "none";
+                      if (!firstFrameReceived) {
+                        firstFrameReceived = true;
+                        clearTimeout(watchdog);
+                        setStatus("connected", `Streaming · ${size}`);
+                      }
                     },
                     error: (e) => console.warn("Decoder:", e),
                   });
@@ -1126,6 +1155,7 @@
           };
 
           shell.onClose = () => {
+            clearTimeout(watchdog);
             if (!aborted) stopStream();
           };
         } catch (err) {
