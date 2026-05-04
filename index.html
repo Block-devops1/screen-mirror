@@ -1072,41 +1072,80 @@
           authNotice.style.display = "none";
           setStatus("connected", `ADB · ${device.productName ?? "Android"}`);
 
-          // Use exec-out (not shell:) so we get raw stdout bytes with NO shell
-          // protocol framing. shell: wraps every write in a 6-byte header which
-          // corrupts the H264 NAL stream — exec-out gives us clean raw bytes.
-          const cmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} --time-limit 180 -`;
+          // Try exec-out: first (raw bytes, no framing).
+          // If no data arrives in 8 s, auto-switch to shell: with Shell Protocol v2 stripping.
+          const recCmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} --time-limit 180 -`;
           setStatus(
             "connecting",
             "Starting screenrecord\u2026 (keep screen on!)",
           );
-          const shell = await adbConn.openStream("exec-out:" + cmd);
+
+          // Android Shell Protocol v2 stripper — used when shell: is needed
+          // Each message: [id:1B][type:1B][len:4B LE][payload]
+          // type 1=stdout (H264), 2=stderr, 3=exit
+          class ShellProtoStripper {
+            constructor() {
+              this.buf = new Uint8Array(0);
+            }
+            push(chunk) {
+              const m = new Uint8Array(this.buf.length + chunk.length);
+              m.set(this.buf);
+              m.set(chunk, this.buf.length);
+              this.buf = m;
+              const out = [];
+              let i = 0;
+              while (i + 6 <= this.buf.length) {
+                const type = this.buf[i + 1];
+                const len =
+                  this.buf[i + 2] |
+                  (this.buf[i + 3] << 8) |
+                  (this.buf[i + 4] << 16) |
+                  (this.buf[i + 5] << 24);
+                if (len < 0 || len > 2 * 1024 * 1024) {
+                  i++;
+                  continue;
+                }
+                if (i + 6 + len > this.buf.length) break;
+                const p = this.buf.slice(i + 6, i + 6 + len);
+                if (type === 1) out.push(p);
+                else if (type === 2)
+                  console.log(
+                    "[screenrecord stderr]",
+                    new TextDecoder().decode(p).trim(),
+                  );
+                i += 6 + len;
+              }
+              this.buf = this.buf.slice(i);
+              if (!out.length) return null;
+              const total = out.reduce((s, a) => s + a.length, 0);
+              const r = new Uint8Array(total);
+              let o = 0;
+              for (const a of out) {
+                r.set(a, o);
+                o += a.length;
+              }
+              return r;
+            }
+          }
+
+          let shell = await adbConn.openStream("exec-out:" + recCmd);
           if (aborted) {
             shell.close();
             adbConn.disconnect();
             return;
           }
 
+          let useShellProto = false,
+            stripper = null;
           setStatus("connecting", "Waiting for first frame\u2026");
           streaming = true;
 
-          // Watchdog: if no frames in 15 s, show a helpful hint
           let firstFrameReceived = false;
-          _watchdogRef = setTimeout(() => {
-            if (!firstFrameReceived && !aborted) {
-              setStatus(
-                "error",
-                "No frames \u2014 is screen on & unlocked? Try 360p quality & reconnect",
-              );
-            }
-          }, 15000);
-
           const parser = new H264Parser();
           let decoder = null,
             tsBase = -1,
             decoderReady = false;
 
-          // Build decoder once we have real SPS bytes — never rebuild unless error
           function initDecoder() {
             if (decoder) {
               try {
@@ -1117,8 +1156,8 @@
             const ph = Array.from(parser.sps.slice(1, 4))
               .map((b) => b.toString(16).padStart(2, "0"))
               .join("");
-            const codecStr = `avc1.${ph}`;
-            console.log("Init decoder with codec:", codecStr);
+            const codec = `avc1.${ph}`;
+            console.log("VideoDecoder codec:", codec);
             decoder = new VideoDecoder({
               output: (frame) => {
                 if (
@@ -1139,53 +1178,35 @@
                 }
               },
               error: (e) => {
-                console.warn(
-                  "Decoder error \u2014 will reinit on next keyframe:",
-                  e.message,
-                );
-                decoderReady = false; // trigger reinit on next IDR
+                console.warn("Decoder:", e.message);
+                decoderReady = false;
               },
             });
-            decoder.configure({ codec: codecStr, optimizeForLatency: true });
+            decoder.configure({ codec, optimizeForLatency: true });
             decoderReady = true;
           }
 
-          shell.onData = (raw) => {
-            if (aborted) return;
-            byteCount += raw.length;
-
-            // Feed raw bytes into NAL parser — exec-out gives clean Annex-B stream
-            const nals = parser.push(raw);
-            for (const nal of nals) {
-              const nalType = nal[0] & 0x1f;
-
-              if (nalType === 7) {
+          function processNals(raw) {
+            for (const nal of parser.push(raw)) {
+              const t = nal[0] & 0x1f;
+              if (t === 7) {
                 parser.sps = nal;
                 continue;
-              } // SPS
-              if (nalType === 8) {
+              }
+              if (t === 8) {
                 parser.pps = nal;
                 continue;
-              } // PPS
-
-              // IDR (keyframe=5) or non-IDR slice (1) — need SPS+PPS first
-              if (
-                (nalType === 5 || nalType === 1) &&
-                parser.sps &&
-                parser.pps
-              ) {
-                // Init or reinit decoder only on IDR frames
-                if (!decoderReady || (nalType === 5 && !decoder)) {
+              }
+              if ((t === 5 || t === 1) && parser.sps && parser.pps) {
+                if (!decoderReady) {
                   initDecoder();
-                  tsBase = performance.now(); // reset clock on new decode session
+                  tsBase = performance.now();
                 }
-                if (!decoderReady) continue; // skip until decoder is ready
-
+                if (!decoderReady) continue;
                 const ts = Math.round((performance.now() - tsBase) * 1000);
                 const sc = new Uint8Array([0, 0, 0, 1]);
                 let fd;
-                if (nalType === 5) {
-                  // Keyframe: bundle SPS + PPS + IDR into one chunk
+                if (t === 5) {
                   fd = new Uint8Array(
                     sc.length +
                       parser.sps.length +
@@ -1214,7 +1235,7 @@
                 try {
                   decoder.decode(
                     new EncodedVideoChunk({
-                      type: nalType === 5 ? "key" : "delta",
+                      type: t === 5 ? "key" : "delta",
                       timestamp: ts,
                       data: fd,
                     }),
@@ -1224,8 +1245,68 @@
                 }
               }
             }
-          };
+          }
 
+          const dataHandler = (raw) => {
+            if (aborted) return;
+            byteCount += raw.length;
+            if (useShellProto) {
+              const stdout = stripper.push(raw);
+              if (stdout) processNals(stdout);
+            } else {
+              processNals(raw);
+            }
+          };
+          shell.onData = dataHandler;
+
+          // Watchdog: if exec-out sends nothing in 8 s, switch to shell: with proto stripping
+          _watchdogRef = setTimeout(async () => {
+            if (firstFrameReceived || aborted) return;
+            if (!useShellProto) {
+              console.log(
+                "exec-out no data — switching to shell: with protocol stripping",
+              );
+              useShellProto = true;
+              stripper = new ShellProtoStripper();
+              try {
+                shell.close();
+              } catch (_) {}
+              try {
+                shell = await adbConn.openStream("shell:" + recCmd);
+                shell.onData = dataHandler;
+                shell.onClose = () => {
+                  clearWatchdog();
+                  if (!aborted) stopStream();
+                };
+                shell.onError = (e) => {
+                  clearWatchdog();
+                  if (!aborted) {
+                    setStatus("error", "USB error \u2014 replug & reconnect");
+                    stopStream();
+                  }
+                };
+                setStatus(
+                  "connecting",
+                  "Switched to shell mode \u2014 waiting for frame\u2026",
+                );
+                _watchdogRef = setTimeout(() => {
+                  if (!firstFrameReceived && !aborted)
+                    setStatus(
+                      "error",
+                      "No frames \u2014 try 360p, keep screen on",
+                    );
+                }, 15000);
+              } catch (e) {
+                setStatus("error", "Failed to open shell stream: " + e.message);
+                stopStream();
+              }
+            } else {
+              setStatus(
+                "error",
+                "No frames \u2014 try 360p, keep screen on, replug cable",
+              );
+            }
+          }, 8000);
           shell.onClose = () => {
             clearWatchdog();
             if (!aborted) stopStream();
