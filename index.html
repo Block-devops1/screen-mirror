@@ -815,17 +815,20 @@
       }
 
       // ── Crypto helpers ──
+      // Pre-generate RSA key at page load so it is already resolved by the time
+      // the user clicks Connect — eliminates the ~250ms INP block on the button.
+      const _keyPairPromise = crypto.subtle.generateKey(
+        {
+          name: "RSASSA-PKCS1-v1_5",
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: "SHA-1",
+        },
+        true,
+        ["sign", "verify"],
+      );
       async function generateAdbKey() {
-        return crypto.subtle.generateKey(
-          {
-            name: "RSASSA-PKCS1-v1_5",
-            modulusLength: 2048,
-            publicExponent: new Uint8Array([1, 0, 1]),
-            hash: "SHA-1",
-          },
-          true,
-          ["sign", "verify"],
-        );
+        return _keyPairPromise;
       }
       async function signToken(kp, token) {
         return new Uint8Array(
@@ -936,6 +939,10 @@
           setStatus("error", "WebUSB not supported — use Chrome/Chromium");
           return;
         }
+
+        // Yield to the browser paint cycle first so the button visually
+        // responds (disabled state) before any async work runs — fixes INP.
+        await new Promise((r) => setTimeout(r, 0));
 
         const [size, bitrate] = qualitySelect.value.split(",");
         statRes.textContent = size;
