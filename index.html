@@ -703,7 +703,20 @@
         }
 
         async _send(data) {
-          await this.device.transferOut(this.epOut.endpointNumber, data);
+          // Retry up to 4 times on transient NetworkError (common on Honor/MagicOS
+          // during the first few packets after USB endpoint activation).
+          let lastErr;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            try {
+              await this.device.transferOut(this.epOut.endpointNumber, data);
+              return;
+            } catch (e) {
+              lastErr = e;
+              if (e.name !== "NetworkError") throw e; // non-transient, bail immediately
+              await new Promise((r) => setTimeout(r, 60 * (attempt + 1)));
+            }
+          }
+          throw lastErr;
         }
 
         _append(chunk) {
@@ -929,6 +942,18 @@
           throw new Error(
             "ADB bulk endpoints not found — replug the cable and retry",
           );
+
+        // Clear any stale data on both endpoints (Honor/MagicOS leaves endpoints
+        // in a halted state from previous sessions — clearHalt un-stalls them).
+        try {
+          await device.clearHalt("in", epIn.endpointNumber);
+        } catch (_) {}
+        try {
+          await device.clearHalt("out", epOut.endpointNumber);
+        } catch (_) {}
+        // Small settle delay — Honor USB controller needs ~150ms after clearHalt
+        // before the first transferOut succeeds without a NetworkError.
+        await new Promise((r) => setTimeout(r, 150));
 
         const conn = new AdbConnection(device, adbIntf, epIn, epOut);
         const keyPair = await generateAdbKey();
