@@ -878,32 +878,28 @@
       }
 
       // ── connectAdb ──
-      // MagicOS 7.1 behaviour: when Chrome claims the ADB interface the phone
-      // kernel does a USB re-enumeration (disconnect + reconnect). The original
-      // USBDevice object becomes stale (NotFoundError on any transfer). We must:
-      //   1. Catch that disconnect
-      //   2. Wait for the device to re-appear in navigator.usb.getDevices()
-      //   3. Re-open the fresh device object and continue the handshake
       async function connectAdb(device) {
-        // ── Helper: wait for device to re-appear after re-enumeration ──
-        async function waitForReconnect(vendorId, productId, timeoutMs = 8000) {
-          const deadline = Date.now() + timeoutMs;
+        const vendorId = device.vendorId;
+        const productId = device.productId;
+
+        // Wait for device to re-appear after MagicOS re-enumeration
+        async function waitForReconnect(ms = 10000) {
+          const deadline = Date.now() + ms;
           while (Date.now() < deadline) {
-            await new Promise((r) => setTimeout(r, 300));
-            const devices = await navigator.usb.getDevices();
-            const found = devices.find(
-              (d) => d.vendorId === vendorId && d.productId === productId,
+            await new Promise((r) => setTimeout(r, 400));
+            const list = await navigator.usb.getDevices();
+            const d = list.find(
+              (x) => x.vendorId === vendorId && x.productId === productId,
             );
-            if (found) return found;
+            if (d) return d;
           }
           throw new Error(
-            "Device did not re-appear after USB re-enumeration — replug cable",
+            "Device did not re-appear after re-enumeration — replug cable",
           );
         }
 
-        // ── Helper: open + claim + configure one device object ──
+        // Open + claim + endpoint setup on a given USBDevice object
         async function openAndClaim(dev) {
-          // Close first in case it was left open from a previous attempt
           try {
             await dev.close();
           } catch (_) {}
@@ -939,23 +935,13 @@
           try {
             await dev.claimInterface(adbIntf.interfaceNumber);
           } catch (_) {}
-          try {
-            await dev.selectAlternateInterface(
-              adbIntf.interfaceNumber,
-              adbAltIdx,
-            );
-          } catch (_) {}
+          // Do NOT call selectAlternateInterface or clearHalt — these trigger
+          // MagicOS re-enumeration. Just claim and go.
 
           let epIn = null,
             epOut = null;
-          const liveIntf = dev.configuration?.interfaces.find(
-            (i) => i.interfaceNumber === adbIntf.interfaceNumber,
-          );
-          const liveAlt =
-            liveIntf?.alternates.find(
-              (a) => a.alternateSetting === adbAltIdx,
-            ) ?? adbAlt;
-          for (const ep of liveAlt.endpoints) {
+          // Read endpoints directly from the matched alternate descriptor
+          for (const ep of adbAlt.endpoints) {
             if (ep.type === "bulk") {
               if (ep.direction === "in") epIn = ep;
               else epOut = ep;
@@ -964,95 +950,86 @@
           if (!epIn || !epOut)
             throw new Error("ADB bulk endpoints not found — replug cable");
 
-          try {
-            await dev.clearHalt("in", epIn.endpointNumber);
-          } catch (_) {}
-          try {
-            await dev.clearHalt("out", epOut.endpointNumber);
-          } catch (_) {}
-          await new Promise((r) => setTimeout(r, 200));
+          // Longer settle — MagicOS needs time after claimInterface
+          await new Promise((r) => setTimeout(r, 500));
 
           return { dev, adbIntf, epIn, epOut };
         }
 
-        // ── First open attempt ──
-        let claimed;
-        try {
-          claimed = await openAndClaim(device);
-        } catch (e) {
-          // NotFoundError = MagicOS re-enumerated the device — wait and retry
-          if (e.name === "NotFoundError" || e.name === "NetworkError") {
-            setStatus("connecting", "USB re-enumeration detected — waiting…");
-            const fresh = await waitForReconnect(
-              device.vendorId,
-              device.productId,
+        // Full connect attempt: openAndClaim + ADB handshake
+        // Retried up to 3 times to handle MagicOS re-enumeration at any stage
+        async function attemptConnect(dev) {
+          const {
+            dev: liveDevice,
+            adbIntf,
+            epIn,
+            epOut,
+          } = await openAndClaim(dev);
+          const conn = new AdbConnection(liveDevice, adbIntf, epIn, epOut);
+          const keyPair = await generateAdbKey();
+
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(
+              () =>
+                reject(new Error("ADB handshake timeout — tap Allow on phone")),
+              30000,
             );
-            claimed = await openAndClaim(fresh);
-          } else {
-            throw e;
-          }
+
+            let authRound = 0;
+            conn._onMessage = async (msg) => {
+              try {
+                if (msg.cmd === A_AUTH && msg.arg0 === AUTH_TOKEN) {
+                  authRound++;
+                  if (authRound === 1) {
+                    const sig = await signToken(keyPair, msg.data);
+                    await conn._send(makeMsg(A_AUTH, AUTH_SIGNATURE, 0, sig));
+                  } else {
+                    const pubkey = await exportAdbPublicKey(keyPair);
+                    await conn._send(
+                      makeMsg(A_AUTH, AUTH_RSAPUBLICKEY, 0, pubkey),
+                    );
+                  }
+                } else if (msg.cmd === A_CNXN) {
+                  clearTimeout(timeout);
+                  conn._onMessage = (m) => conn._dispatch(m);
+                  resolve();
+                }
+              } catch (e) {
+                clearTimeout(timeout);
+                reject(e);
+              }
+            };
+
+            conn.startReadLoop();
+            conn
+              ._send(
+                makeMsg(A_CNXN, ADB_VERSION, MAX_PAYLOAD, "host::VLCMirror\0"),
+              )
+              .catch(reject);
+          });
+
+          return conn;
         }
 
-        const { dev: liveDevice, adbIntf, epIn, epOut } = claimed;
-        const conn = new AdbConnection(liveDevice, adbIntf, epIn, epOut);
-        const keyPair = await generateAdbKey();
-
-        await new Promise((resolve, reject) => {
-          // 30 s — long enough for user to see and tap the phone prompt
-          const timeout = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  "ADB handshake timeout — make sure you tapped Allow on the phone",
-                ),
-              ),
-            30000,
-          );
-
-          let authRound = 0;
-
-          // FIX 1: assign handler BEFORE startReadLoop so no packet is missed
-          conn._onMessage = async (msg) => {
+        // Retry loop — catches re-enumeration at any point (claim OR first send)
+        let lastDev = device;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            return await attemptConnect(lastDev);
+          } catch (e) {
+            const isReEnum =
+              e.name === "NotFoundError" || e.name === "NetworkError";
+            if (!isReEnum || attempt === 2) throw e;
+            setStatus(
+              "connecting",
+              `USB re-enumeration (attempt ${attempt + 2}/3) — waiting…`,
+            );
             try {
-              if (msg.cmd === A_AUTH && msg.arg0 === AUTH_TOKEN) {
-                authRound++;
-                if (authRound === 1) {
-                  // Round 1: try RSA signature — works instantly if key is already trusted
-                  const sig = await signToken(keyPair, msg.data);
-                  await conn._send(makeMsg(A_AUTH, AUTH_SIGNATURE, 0, sig));
-                } else {
-                  // FIX 2: Round 2 — phone rejected our sig, demands public key
-                  // User will see an Allow prompt on the phone screen
-                  const pubkey = await exportAdbPublicKey(keyPair);
-                  await conn._send(
-                    makeMsg(A_AUTH, AUTH_RSAPUBLICKEY, 0, pubkey),
-                  );
-                  // Now just wait — phone sends CNXN once user taps Allow
-                }
-              } else if (msg.cmd === A_CNXN) {
-                // Handshake complete
-                clearTimeout(timeout);
-                conn._onMessage = (m) => conn._dispatch(m); // switch to normal handler
-                resolve();
-              }
-            } catch (e) {
-              clearTimeout(timeout);
-              reject(e);
-            }
-          };
-
-          // FIX 1: Start read loop NOW, after handler is in place
-          conn.startReadLoop(); // background task, intentionally not awaited
-
-          // Kick off the handshake
-          conn
-            ._send(
-              makeMsg(A_CNXN, ADB_VERSION, MAX_PAYLOAD, "host::VLCMirror\0"),
-            )
-            .catch(reject);
-        });
-
-        return conn;
+              await lastDev.close();
+            } catch (_) {}
+            lastDev = await waitForReconnect();
+          }
+        }
       }
 
       // ── Connect button ──
