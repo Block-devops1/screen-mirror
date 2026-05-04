@@ -1,0 +1,944 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VLC Phone Mirror</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+
+    <style>
+      :root {
+        --bg: #060608;
+        --surface: #0e0f14;
+        --border: #1e2030;
+        --amber: #e8a030;
+        --amber-dim: #9a6a1a;
+        --green: #22c55e;
+        --red: #ef4444;
+        --blue: #3b82f6;
+        --text: #d4cfc8;
+        --muted: #5a5750;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Syne", sans-serif;
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      /* ── Header ── */
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 20px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+        gap: 12px;
+      }
+
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .logo-icon {
+        width: 32px;
+        height: 32px;
+        background: var(--amber);
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+      }
+      .logo-name {
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        color: #fff;
+      }
+      .logo-name span {
+        color: var(--amber);
+      }
+
+      /* Status pill */
+      #status-pill {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 14px;
+        border-radius: 99px;
+        background: #13141a;
+        border: 1px solid var(--border);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.03em;
+        color: var(--muted);
+        transition: all 0.3s;
+      }
+      #status-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--muted);
+        transition: background 0.3s;
+      }
+      #status-pill.connected {
+        color: var(--green);
+        border-color: #166534;
+      }
+      #status-pill.connected #status-dot {
+        background: var(--green);
+        box-shadow: 0 0 6px var(--green);
+        animation: pulse 2s infinite;
+      }
+      #status-pill.error {
+        color: var(--red);
+        border-color: #7f1d1d;
+      }
+      #status-pill.error #status-dot {
+        background: var(--red);
+      }
+      #status-pill.connecting {
+        color: var(--amber);
+        border-color: var(--amber-dim);
+      }
+      #status-pill.connecting #status-dot {
+        background: var(--amber);
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+      }
+
+      /* Controls */
+      .controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      btn,
+      button {
+        font-family: "Syne", sans-serif;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        padding: 8px 16px;
+        transition: all 0.15s;
+      }
+      button:active {
+        transform: scale(0.96);
+      }
+      button:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      #btn-connect {
+        background: var(--amber);
+        color: #000;
+        padding: 8px 20px;
+      }
+      #btn-connect:hover:not(:disabled) {
+        background: #f0ae48;
+      }
+
+      #btn-disconnect {
+        background: #1a1a1a;
+        color: var(--red);
+        border: 1px solid #3f1515;
+      }
+      #btn-disconnect:hover:not(:disabled) {
+        background: #2a1010;
+      }
+
+      #btn-rotate {
+        background: #13141a;
+        color: var(--blue);
+        border: 1px solid #1e3a5f;
+      }
+      #btn-rotate:hover:not(:disabled) {
+        background: #0f1e30;
+      }
+
+      #btn-fullscreen {
+        background: #13141a;
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 8px 12px;
+        font-size: 14px;
+      }
+      #btn-fullscreen:hover {
+        background: #1a1b22;
+      }
+
+      /* Quality selector */
+      select {
+        background: #13141a;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 7px 10px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        cursor: pointer;
+        outline: none;
+      }
+      select:focus {
+        border-color: var(--amber-dim);
+      }
+
+      /* ── Display Area ── */
+      #display-container {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #020204;
+        overflow: hidden;
+        position: relative;
+      }
+
+      /* Scan-line overlay for idle state */
+      #display-container::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 2px,
+          rgba(0, 0, 0, 0.06) 2px,
+          rgba(0, 0, 0, 0.06) 4px
+        );
+        pointer-events: none;
+        z-index: 2;
+      }
+
+      canvas {
+        max-width: 100%;
+        max-height: 100%;
+        display: block;
+        transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+
+      /* Idle overlay */
+      #idle-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        z-index: 3;
+        pointer-events: none;
+      }
+      #idle-overlay .idle-icon {
+        font-size: 52px;
+        opacity: 0.12;
+      }
+      #idle-overlay .idle-text {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+        line-height: 1.8;
+        letter-spacing: 0.05em;
+      }
+
+      /* ── Footer Stats ── */
+      #stats-bar {
+        display: flex;
+        gap: 20px;
+        padding: 8px 20px;
+        background: var(--surface);
+        border-top: 1px solid var(--border);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+        flex-shrink: 0;
+      }
+      .stat {
+        display: flex;
+        gap: 6px;
+      }
+      .stat-label {
+        color: #3a3930;
+      }
+      .stat-value {
+        color: var(--muted);
+        transition: color 0.3s;
+      }
+      .stat-value.active {
+        color: var(--amber);
+      }
+
+      /* ── Setup Guide ── */
+      #setup-panel {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.85);
+        backdrop-filter: blur(8px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+        padding: 20px;
+      }
+      #setup-panel.hidden {
+        display: none;
+      }
+
+      .setup-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 36px;
+        max-width: 480px;
+        width: 100%;
+      }
+      .setup-card h2 {
+        font-size: 22px;
+        font-weight: 800;
+        color: #fff;
+        margin-bottom: 6px;
+      }
+      .setup-card .subtitle {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 28px;
+      }
+      .step {
+        display: flex;
+        gap: 14px;
+        margin-bottom: 20px;
+        align-items: flex-start;
+      }
+      .step-num {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: var(--amber);
+        color: #000;
+        font-weight: 800;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+      .step-text {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--text);
+      }
+      .step-text code {
+        background: #13141a;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        color: var(--amber);
+      }
+      .setup-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 28px;
+      }
+      #btn-got-it {
+        background: var(--amber);
+        color: #000;
+        font-weight: 800;
+        border: none;
+        border-radius: 8px;
+        padding: 12px 28px;
+        cursor: pointer;
+        font-family: "Syne", sans-serif;
+        font-size: 13px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        flex: 1;
+        transition: background 0.15s;
+      }
+      #btn-got-it:hover {
+        background: #f0ae48;
+      }
+      #btn-skip {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 20px;
+        cursor: pointer;
+        font-family: "Syne", sans-serif;
+        font-size: 13px;
+        letter-spacing: 0.05em;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- Setup Guide Overlay -->
+    <div id="setup-panel">
+      <div class="setup-card">
+        <h2>Before You Connect</h2>
+        <p class="subtitle">
+          One-time setup for your Honor X9a 5G → Chromebook
+        </p>
+
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">
+            On your phone: <strong>Settings → About Phone</strong>, tap
+            <strong>Build Number</strong> 7 times to unlock Developer Options.
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">
+            Go to <strong>Settings → Developer Options</strong> and enable
+            <strong>USB Debugging</strong>.
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-text">
+            Plug your phone into the Chromebook via USB. When prompted on the
+            phone, tap <strong>"Allow USB Debugging"</strong> and check
+            <em>"Always allow from this computer"</em>.
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-text">
+            Open your video in <strong>VLC</strong> on the phone, then click
+            <code>CONNECT PHONE</code> and select your Honor device.
+          </div>
+        </div>
+
+        <div class="setup-actions">
+          <button id="btn-got-it">Got it, let's go →</button>
+          <button id="btn-skip">Skip</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Header -->
+    <header>
+      <div class="logo">
+        <div class="logo-icon">▶</div>
+        <div class="logo-name">VLC <span>Mirror</span></div>
+      </div>
+
+      <div id="status-pill">
+        <div id="status-dot"></div>
+        <span id="status-text">Ready</span>
+      </div>
+
+      <div class="controls">
+        <select id="quality-select" title="Stream quality">
+          <option value="1280x720,4000000">HD 720p / 4 Mbps</option>
+          <option value="1920x1080,6000000">FHD 1080p / 6 Mbps</option>
+          <option value="960x540,2000000">540p / 2 Mbps (low lag)</option>
+          <option value="640x360,1000000">360p / 1 Mbps (fastest)</option>
+        </select>
+        <button id="btn-rotate" title="Rotate view">↻ Rotate</button>
+        <button id="btn-fullscreen" title="Fullscreen">⛶</button>
+        <button id="btn-disconnect" disabled>■ Stop</button>
+        <button id="btn-connect">⚡ Connect Phone</button>
+      </div>
+    </header>
+
+    <!-- Main Display -->
+    <div id="display-container">
+      <canvas id="display" width="1280" height="720"></canvas>
+      <div id="idle-overlay">
+        <div class="idle-icon">📱</div>
+        <div class="idle-text">
+          NO SIGNAL — USB CABLE REQUIRED<br />
+          Connect your Honor X9a 5G and click <strong>Connect Phone</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats Bar -->
+    <div id="stats-bar">
+      <div class="stat">
+        <span class="stat-label">RES</span
+        ><span class="stat-value" id="stat-res">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">FRAMES</span
+        ><span class="stat-value" id="stat-frames">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">DATA</span
+        ><span class="stat-value" id="stat-data">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">ROTATE</span
+        ><span class="stat-value" id="stat-rotate">0°</span>
+      </div>
+      <div class="stat" style="margin-left: auto">
+        <span class="stat-label">USB·ADB·WebCodecs</span
+        ><span class="stat-value">▪ LOCAL ONLY</span>
+      </div>
+    </div>
+
+    <script type="module">
+      /* ═══════════════════════════════════════════════════
+       IMPORTANT: This app uses the @yume-chan/adb library
+       for ADB-over-WebUSB. The initial page load requires
+       internet ONCE to fetch the library. After that,
+       all streaming is 100% local over USB — no internet.
+    ═══════════════════════════════════════════════════ */
+
+      // ─── Library import (CDN, needed once for caching) ───
+      let AdbModule, AdbWebUsbBackendModule;
+      try {
+        [AdbModule, AdbWebUsbBackendModule] = await Promise.all([
+          import("https://esm.sh/@yume-chan/adb@0.0.24"),
+          import("https://esm.sh/@yume-chan/adb-backend-webusb@0.0.24"),
+        ]);
+      } catch (e) {
+        // Fallback: try Skypack
+        try {
+          AdbModule =
+            await import("https://cdn.skypack.dev/@yume-chan/adb@0.0.24");
+          AdbWebUsbBackendModule =
+            await import("https://cdn.skypack.dev/@yume-chan/adb-backend-webusb@0.0.24");
+        } catch (e2) {
+          setStatus(
+            "error",
+            "Library load failed. Check internet for first-time setup.",
+          );
+        }
+      }
+
+      // ─── DOM Refs ───
+      const canvas = document.getElementById("display");
+      const ctx = canvas.getContext("2d");
+      const idleOverlay = document.getElementById("idle-overlay");
+      const statusPill = document.getElementById("status-pill");
+      const statusText = document.getElementById("status-text");
+      const statusDot = document.getElementById("status-dot");
+      const btnConnect = document.getElementById("btn-connect");
+      const btnDisconnect = document.getElementById("btn-disconnect");
+      const btnRotate = document.getElementById("btn-rotate");
+      const btnFullscreen = document.getElementById("btn-fullscreen");
+      const qualitySelect = document.getElementById("quality-select");
+      const setupPanel = document.getElementById("setup-panel");
+      const statRes = document.getElementById("stat-res");
+      const statFrames = document.getElementById("stat-frames");
+      const statData = document.getElementById("stat-data");
+      const statRotate = document.getElementById("stat-rotate");
+
+      // Setup panel
+      document.getElementById("btn-got-it").onclick = () =>
+        setupPanel.classList.add("hidden");
+      document.getElementById("btn-skip").onclick = () =>
+        setupPanel.classList.add("hidden");
+
+      // ─── State ───
+      let angle = 0;
+      let frameCount = 0;
+      let byteCount = 0;
+      let streaming = false;
+      let stopStream = null; // call this to abort
+      let adbInstance = null;
+
+      // ─── Status helper ───
+      function setStatus(state, msg) {
+        statusPill.className = state; // 'connecting' | 'connected' | 'error' | ''
+        statusText.textContent = msg;
+      }
+
+      // ─── Stats update ───
+      setInterval(() => {
+        if (!streaming) return;
+        statFrames.textContent = frameCount + " frames";
+        statFrames.classList.add("active");
+        statData.textContent = (byteCount / 1024 / 1024).toFixed(1) + " MB";
+        statData.classList.add("active");
+      }, 1000);
+
+      // ─── Rotate ───
+      btnRotate.onclick = () => {
+        angle = (angle + 90) % 360;
+        canvas.style.transform = `rotate(${angle}deg)`;
+        statRotate.textContent = angle + "°";
+        statRotate.classList.toggle("active", angle !== 0);
+      };
+
+      // ─── Fullscreen ───
+      btnFullscreen.onclick = () => {
+        const container = document.getElementById("display-container");
+        if (!document.fullscreenElement) {
+          container.requestFullscreen?.();
+        } else {
+          document.exitFullscreen?.();
+        }
+      };
+
+      // ═══════════════════════════════════════════════════
+      //  H.264 Annex-B NAL Unit Parser
+      // ═══════════════════════════════════════════════════
+      class H264Parser {
+        constructor() {
+          this.buf = new Uint8Array(0);
+          this.sps = null;
+          this.pps = null;
+          this.ready = false; // decoder configured
+        }
+
+        /** Append incoming bytes and return array of complete NAL units */
+        push(incoming) {
+          const merged = new Uint8Array(this.buf.length + incoming.length);
+          merged.set(this.buf);
+          merged.set(incoming, this.buf.length);
+          this.buf = merged;
+          return this._extract();
+        }
+
+        _extract() {
+          const out = [];
+          const d = this.buf;
+          let prev = -1;
+
+          const startOf = (i) =>
+            d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 0 && d[i + 3] === 1
+              ? 4
+              : d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 1
+                ? 3
+                : 0;
+
+          for (let i = 0; i < d.length - 3; i++) {
+            const scLen = startOf(i);
+            if (scLen > 0) {
+              if (prev >= 0) out.push(d.slice(prev, i));
+              prev = i + scLen;
+              i += scLen - 1;
+            }
+          }
+
+          // Keep the last incomplete NAL in the buffer
+          this.buf = prev >= 0 ? d.slice(prev) : d;
+          return out;
+        }
+
+        nalType(nal) {
+          return nal[0] & 0x1f;
+        }
+
+        isKeyframe(nal) {
+          const t = this.nalType(nal);
+          return t === 5; // IDR slice
+        }
+      }
+
+      // ═══════════════════════════════════════════════════
+      //  Credential store (in-memory, no persistence needed)
+      // ═══════════════════════════════════════════════════
+      class MemoryCredentialStore {
+        constructor() {
+          this._key = null;
+        }
+        async generateKey() {
+          // Generate an RSA key for ADB auth
+          this._key = await crypto.subtle.generateKey(
+            {
+              name: "RSASSA-PKCS1-v1_5",
+              modulusLength: 2048,
+              publicExponent: new Uint8Array([1, 0, 1]),
+              hash: "SHA-1",
+            },
+            true,
+            ["sign", "verify"],
+          );
+          return this._key;
+        }
+        async iterateKeys() {
+          return this._key ? [this._key] : [];
+        }
+      }
+
+      // ═══════════════════════════════════════════════════
+      //  Main Connection
+      // ═══════════════════════════════════════════════════
+      btnConnect.onclick = async () => {
+        if (!AdbModule || !AdbWebUsbBackendModule) {
+          setStatus("error", "Library not loaded — check internet & refresh");
+          return;
+        }
+
+        const { Adb } = AdbModule;
+        const { AdbWebUsbBackend, AdbWebUsbDeviceManager } =
+          AdbWebUsbBackendModule;
+
+        setStatus("connecting", "Requesting USB device…");
+        btnConnect.disabled = true;
+        btnDisconnect.disabled = false;
+
+        // Parse quality selection
+        const [size, bitrate] = qualitySelect.value.split(",");
+        statRes.textContent = size;
+        statRes.classList.add("active");
+        qualitySelect.disabled = true;
+
+        let aborted = false;
+        stopStream = () => {
+          aborted = true;
+          setStatus("", "Disconnected");
+          streaming = false;
+          btnConnect.disabled = false;
+          btnDisconnect.disabled = true;
+          qualitySelect.disabled = false;
+          idleOverlay.style.display = "flex";
+          statRes.classList.remove("active");
+          statFrames.classList.remove("active");
+          statData.classList.remove("active");
+          frameCount = 0;
+          byteCount = 0;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        };
+        btnDisconnect.onclick = stopStream;
+
+        try {
+          // ── 1. Request USB device ──
+          const device = await AdbWebUsbBackend.requestDevice();
+          if (aborted) return;
+
+          setStatus("connecting", "Authenticating ADB…");
+          const credStore = new MemoryCredentialStore();
+          const backend = new AdbWebUsbBackend(device);
+          const adb = await Adb.authenticate(backend, credStore, undefined);
+          adbInstance = adb;
+
+          if (aborted) {
+            adb.dispose?.();
+            return;
+          }
+          setStatus("connected", `ADB · ${device.productName ?? "Honor X9a"}`);
+
+          // ── 2. VideoDecoder setup ──
+          const parser = new H264Parser();
+          let decoder = null;
+          let tsBase = -1;
+
+          function initDecoder() {
+            if (decoder) {
+              try {
+                decoder.close();
+              } catch (_) {}
+            }
+            decoder = new VideoDecoder({
+              output: (frame) => {
+                // Resize canvas once on first frame
+                if (
+                  canvas.width !== frame.displayWidth ||
+                  canvas.height !== frame.displayHeight
+                ) {
+                  canvas.width = frame.displayWidth;
+                  canvas.height = frame.displayHeight;
+                }
+                ctx.drawImage(frame, 0, 0);
+                frame.close();
+                frameCount++;
+                idleOverlay.style.display = "none";
+              },
+              error: (e) => {
+                console.warn("Decoder error:", e);
+                // Attempt to reset
+                parser.sps = null;
+                parser.pps = null;
+                parser.ready = false;
+              },
+            });
+            decoder.configure({
+              codec: "avc1.42E01E",
+              optimizeForLatency: true,
+            });
+          }
+
+          // ── 3. Start screenrecord stream ──
+          const cmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} -`;
+          const shell = await adb.subprocess.shell(cmd);
+          if (aborted) {
+            shell.kill?.();
+            adb.dispose?.();
+            return;
+          }
+
+          setStatus("connected", `Streaming · ${size}`);
+          streaming = true;
+
+          // ── 4. Data loop ──
+          const reader = shell.stdout.getReader();
+
+          initDecoder();
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done || aborted) break;
+
+            byteCount += value.length;
+
+            const nals = parser.push(value);
+
+            for (const nal of nals) {
+              const type = parser.nalType(nal);
+
+              // Collect SPS / PPS for codec config
+              if (type === 7) {
+                // SPS
+                parser.sps = nal;
+              } else if (type === 8) {
+                // PPS
+                parser.pps = nal;
+              } else if (
+                (type === 5 || type === 1) &&
+                parser.sps &&
+                parser.pps
+              ) {
+                // Ensure decoder is configured
+                if (!parser.ready) {
+                  // Re-configure with actual SPS/PPS
+                  try {
+                    decoder.close();
+                  } catch (_) {}
+                  decoder = new VideoDecoder({
+                    output: (frame) => {
+                      if (
+                        canvas.width !== frame.displayWidth ||
+                        canvas.height !== frame.displayHeight
+                      ) {
+                        canvas.width = frame.displayWidth;
+                        canvas.height = frame.displayHeight;
+                      }
+                      ctx.drawImage(frame, 0, 0);
+                      frame.close();
+                      frameCount++;
+                      idleOverlay.style.display = "none";
+                    },
+                    error: (e) => {
+                      console.warn("Decoder error:", e);
+                    },
+                  });
+
+                  // Build extradata (avcc-style) from SPS + PPS for codec string
+                  const profileHex = Array.from(parser.sps.slice(1, 4))
+                    .map((b) => b.toString(16).padStart(2, "0"))
+                    .join("");
+
+                  decoder.configure({
+                    codec: `avc1.${profileHex}`,
+                    optimizeForLatency: true,
+                  });
+                  parser.ready = true;
+                }
+
+                if (tsBase < 0) tsBase = performance.now();
+                const ts = (performance.now() - tsBase) * 1000; // microseconds
+
+                // Build Annex-B frame: SPS + PPS + NAL (for IDR), or just NAL
+                let frameData;
+                if (type === 5) {
+                  // IDR — prepend SPS + PPS
+                  const sc = new Uint8Array([0, 0, 0, 1]);
+                  frameData = new Uint8Array(
+                    sc.length +
+                      parser.sps.length +
+                      sc.length +
+                      parser.pps.length +
+                      sc.length +
+                      nal.length,
+                  );
+                  let off = 0;
+                  frameData.set(sc, off);
+                  off += sc.length;
+                  frameData.set(parser.sps, off);
+                  off += parser.sps.length;
+                  frameData.set(sc, off);
+                  off += sc.length;
+                  frameData.set(parser.pps, off);
+                  off += parser.pps.length;
+                  frameData.set(sc, off);
+                  off += sc.length;
+                  frameData.set(nal, off);
+                } else {
+                  const sc = new Uint8Array([0, 0, 0, 1]);
+                  frameData = new Uint8Array(sc.length + nal.length);
+                  frameData.set(sc);
+                  frameData.set(nal, sc.length);
+                }
+
+                try {
+                  decoder.decode(
+                    new EncodedVideoChunk({
+                      type: type === 5 ? "key" : "delta",
+                      timestamp: ts,
+                      data: frameData,
+                    }),
+                  );
+                } catch (decErr) {
+                  console.warn("Decode skipped:", decErr.message);
+                }
+              }
+              // Skip SEI (type 6), AUD (type 9), etc.
+            }
+          }
+
+          // Cleanup
+          try {
+            decoder?.close();
+          } catch (_) {}
+          try {
+            adb.dispose?.();
+          } catch (_) {}
+          if (!aborted) stopStream();
+        } catch (err) {
+          console.error("Connection error:", err);
+          setStatus("error", err.message || "Connection failed");
+          btnConnect.disabled = false;
+          btnDisconnect.disabled = true;
+          qualitySelect.disabled = false;
+          streaming = false;
+        }
+      };
+    </script>
+  </body>
+</html>
