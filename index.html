@@ -869,8 +869,14 @@
         if (!adbIntf || !epIn || !epOut)
           throw new Error("No ADB interface found — is USB Debugging enabled?");
 
-        await device.selectConfiguration(1);
-        await device.claimInterface(adbIntf.interfaceNumber);
+        // selectConfiguration throws if config is already set (common on ChromeOS)
+        try {
+          await device.selectConfiguration(1);
+        } catch (_) {}
+        // claimInterface throws if already claimed from a previous attempt
+        try {
+          await device.claimInterface(adbIntf.interfaceNumber);
+        } catch (_) {}
 
         const conn = new AdbConnection(device, adbIntf, epIn, epOut);
         const keyPair = await generateAdbKey();
@@ -997,6 +1003,8 @@
           try {
             device = await navigator.usb.requestDevice({
               filters: [
+                // broad match + strict match — covers all Chromebook ADB variants
+                { classCode: 0xff, subclassCode: 0x42 },
                 { classCode: 0xff, subclassCode: 0x42, protocolCode: 0x01 },
               ],
             });
@@ -1035,7 +1043,9 @@
           setStatus("connected", `ADB · ${device.productName ?? "Android"}`);
 
           // --time-limit 0 = unlimited (default 180s causes silent stop)
-          const cmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} --time-limit 0 -`;
+          // Loop screenrecord in a shell while-loop so it restarts automatically
+          // when the 180-s Android limit is hit (--time-limit 0 is invalid on Android ≤10)
+          const cmd = `while true; do screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} --time-limit 180 - ; done`;
           setStatus(
             "connecting",
             "Starting screenrecord… (keep screen unlocked!)",
@@ -1068,7 +1078,8 @@
           let decoder = null,
             tsBase = -1;
 
-          function makeDecoder() {
+          // Helper to build a fresh VideoDecoder with the correct codec from SPS bytes
+          function buildDecoder() {
             if (decoder) {
               try {
                 decoder.close();
@@ -1094,18 +1105,21 @@
                 }
               },
               error: (e) => {
-                console.warn("Decoder:", e);
+                console.warn("Decoder error:", e);
+                // Reset so we re-init on the next keyframe
                 parser.sps = null;
                 parser.pps = null;
                 parser.ready = false;
               },
             });
+            const ph = Array.from(parser.sps.slice(1, 4))
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("");
             decoder.configure({
-              codec: "avc1.42E01E",
+              codec: `avc1.${ph}`,
               optimizeForLatency: true,
             });
           }
-          makeDecoder();
 
           shell.onData = (value) => {
             if (aborted) return;
@@ -1113,54 +1127,30 @@
             const nals = parser.push(value);
             for (const nal of nals) {
               const type = parser.nalType(nal);
+              // Collect SPS (7) and PPS (8) parameter sets
               if (type === 7) {
                 parser.sps = nal;
-              } else if (type === 8) {
+                continue;
+              }
+              if (type === 8) {
                 parser.pps = nal;
-              } else if (
-                (type === 5 || type === 1) &&
-                parser.sps &&
-                parser.pps
-              ) {
-                if (!parser.ready) {
-                  try {
-                    decoder.close();
-                  } catch (_) {}
-                  decoder = new VideoDecoder({
-                    output: (frame) => {
-                      if (
-                        canvas.width !== frame.displayWidth ||
-                        canvas.height !== frame.displayHeight
-                      ) {
-                        canvas.width = frame.displayWidth;
-                        canvas.height = frame.displayHeight;
-                      }
-                      ctx.drawImage(frame, 0, 0);
-                      frame.close();
-                      frameCount++;
-                      idleOverlay.style.display = "none";
-                      if (!firstFrameReceived) {
-                        firstFrameReceived = true;
-                        clearWatchdog();
-                        setStatus("connected", `Streaming · ${size}`);
-                      }
-                    },
-                    error: (e) => console.warn("Decoder:", e),
-                  });
-                  const ph = Array.from(parser.sps.slice(1, 4))
-                    .map((b) => b.toString(16).padStart(2, "0"))
-                    .join("");
-                  decoder.configure({
-                    codec: `avc1.${ph}`,
-                    optimizeForLatency: true,
-                  });
+                continue;
+              }
+
+              // Only decode if we have both parameter sets
+              if ((type === 5 || type === 1) && parser.sps && parser.pps) {
+                // (Re-)init decoder on every keyframe (type 5) or first frame
+                if (!parser.ready || type === 5) {
+                  buildDecoder(); // uses current parser.sps / parser.pps
                   parser.ready = true;
+                  tsBase = -1; // reset timestamp base on new decoder
                 }
                 if (tsBase < 0) tsBase = performance.now();
                 const ts = (performance.now() - tsBase) * 1000;
                 const sc = new Uint8Array([0, 0, 0, 1]);
                 let fd;
                 if (type === 5) {
+                  // Keyframe: prepend SPS + PPS so the decoder is self-contained
                   fd = new Uint8Array(
                     sc.length +
                       parser.sps.length +
