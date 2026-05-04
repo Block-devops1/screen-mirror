@@ -1062,49 +1062,53 @@
           authNotice.style.display = "none";
           setStatus("connected", `ADB · ${device.productName ?? "Android"}`);
 
-          // --time-limit 0 = unlimited (default 180s causes silent stop)
-          // Loop screenrecord in a shell while-loop so it restarts automatically
-          // when the 180-s Android limit is hit (--time-limit 0 is invalid on Android ≤10)
-          const cmd = `while true; do screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} --time-limit 180 - ; done`;
+          // Use exec-out (not shell:) so we get raw stdout bytes with NO shell
+          // protocol framing. shell: wraps every write in a 6-byte header which
+          // corrupts the H264 NAL stream — exec-out gives us clean raw bytes.
+          const cmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} --time-limit 180 -`;
           setStatus(
             "connecting",
-            "Starting screenrecord… (keep screen unlocked!)",
+            "Starting screenrecord\u2026 (keep screen on!)",
           );
-          const shell = await adbConn.openStream("shell:" + cmd);
+          const shell = await adbConn.openStream("exec-out:" + cmd);
           if (aborted) {
             shell.close();
             adbConn.disconnect();
             return;
           }
 
-          setStatus(
-            "connecting",
-            "Waiting for first frame… (screen must stay on)",
-          );
+          setStatus("connecting", "Waiting for first frame\u2026");
           streaming = true;
 
-          // Watchdog: if no frames arrive in 10 s, show a helpful error
+          // Watchdog: if no frames in 15 s, show a helpful hint
           let firstFrameReceived = false;
           _watchdogRef = setTimeout(() => {
             if (!firstFrameReceived && !aborted) {
               setStatus(
                 "error",
-                "No frames — screen locked? Try unlocking phone & reconnecting",
+                "No frames \u2014 is screen on & unlocked? Try 360p quality & reconnect",
               );
             }
-          }, 10000);
+          }, 15000);
 
           const parser = new H264Parser();
           let decoder = null,
-            tsBase = -1;
+            tsBase = -1,
+            decoderReady = false;
 
-          // Helper to build a fresh VideoDecoder with the correct codec from SPS bytes
-          function buildDecoder() {
+          // Build decoder once we have real SPS bytes — never rebuild unless error
+          function initDecoder() {
             if (decoder) {
               try {
                 decoder.close();
               } catch (_) {}
             }
+            decoderReady = false;
+            const ph = Array.from(parser.sps.slice(1, 4))
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("");
+            const codecStr = `avc1.${ph}`;
+            console.log("Init decoder with codec:", codecStr);
             decoder = new VideoDecoder({
               output: (frame) => {
                 if (
@@ -1121,56 +1125,57 @@
                 if (!firstFrameReceived) {
                   firstFrameReceived = true;
                   clearWatchdog();
-                  setStatus("connected", `Streaming · ${size}`);
+                  setStatus("connected", `Streaming \u00b7 ${size}`);
                 }
               },
               error: (e) => {
-                console.warn("Decoder error:", e);
-                // Reset so we re-init on the next keyframe
-                parser.sps = null;
-                parser.pps = null;
-                parser.ready = false;
+                console.warn(
+                  "Decoder error \u2014 will reinit on next keyframe:",
+                  e.message,
+                );
+                decoderReady = false; // trigger reinit on next IDR
               },
             });
-            const ph = Array.from(parser.sps.slice(1, 4))
-              .map((b) => b.toString(16).padStart(2, "0"))
-              .join("");
-            decoder.configure({
-              codec: `avc1.${ph}`,
-              optimizeForLatency: true,
-            });
+            decoder.configure({ codec: codecStr, optimizeForLatency: true });
+            decoderReady = true;
           }
 
-          shell.onData = (value) => {
+          shell.onData = (raw) => {
             if (aborted) return;
-            byteCount += value.length;
-            const nals = parser.push(value);
+            byteCount += raw.length;
+
+            // Feed raw bytes into NAL parser — exec-out gives clean Annex-B stream
+            const nals = parser.push(raw);
             for (const nal of nals) {
-              const type = parser.nalType(nal);
-              // Collect SPS (7) and PPS (8) parameter sets
-              if (type === 7) {
+              const nalType = nal[0] & 0x1f;
+
+              if (nalType === 7) {
                 parser.sps = nal;
                 continue;
-              }
-              if (type === 8) {
+              } // SPS
+              if (nalType === 8) {
                 parser.pps = nal;
                 continue;
-              }
+              } // PPS
 
-              // Only decode if we have both parameter sets
-              if ((type === 5 || type === 1) && parser.sps && parser.pps) {
-                // (Re-)init decoder on every keyframe (type 5) or first frame
-                if (!parser.ready || type === 5) {
-                  buildDecoder(); // uses current parser.sps / parser.pps
-                  parser.ready = true;
-                  tsBase = -1; // reset timestamp base on new decoder
+              // IDR (keyframe=5) or non-IDR slice (1) — need SPS+PPS first
+              if (
+                (nalType === 5 || nalType === 1) &&
+                parser.sps &&
+                parser.pps
+              ) {
+                // Init or reinit decoder only on IDR frames
+                if (!decoderReady || (nalType === 5 && !decoder)) {
+                  initDecoder();
+                  tsBase = performance.now(); // reset clock on new decode session
                 }
-                if (tsBase < 0) tsBase = performance.now();
-                const ts = (performance.now() - tsBase) * 1000;
+                if (!decoderReady) continue; // skip until decoder is ready
+
+                const ts = Math.round((performance.now() - tsBase) * 1000);
                 const sc = new Uint8Array([0, 0, 0, 1]);
                 let fd;
-                if (type === 5) {
-                  // Keyframe: prepend SPS + PPS so the decoder is self-contained
+                if (nalType === 5) {
+                  // Keyframe: bundle SPS + PPS + IDR into one chunk
                   fd = new Uint8Array(
                     sc.length +
                       parser.sps.length +
@@ -1199,7 +1204,7 @@
                 try {
                   decoder.decode(
                     new EncodedVideoChunk({
-                      type: type === 5 ? "key" : "delta",
+                      type: nalType === 5 ? "key" : "delta",
                       timestamp: ts,
                       data: fd,
                     }),
@@ -1211,20 +1216,15 @@
             }
           };
 
-          // Called when phone closes the shell (normal end)
           shell.onClose = () => {
             clearWatchdog();
             if (!aborted) stopStream();
           };
-          // Called when USB read loop dies with a fatal error
           shell.onError = (e) => {
             clearWatchdog();
             console.error("Stream error:", e);
             if (!aborted) {
-              setStatus(
-                "error",
-                "USB transfer error — replug cable & reconnect",
-              );
+              setStatus("error", "USB error \u2014 replug & reconnect");
               stopStream();
             }
           };
