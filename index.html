@@ -3,6 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Allow blob: URLs for canvas image rendering on Vercel/GitHub Pages -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; font-src https://fonts.googleapis.com https://fonts.gstatic.com;"
+    />
     <title>VLC Phone Mirror (Honor Fix)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
@@ -1287,9 +1292,10 @@
               let shell;
               try {
                 // ── FIX A: openStream now has a timeout; rejects on A_CLSE ──
+                // MagicOS can take several seconds; use 14s to outlast the 12s data timeout
                 shell = await adbConn.openStream(
                   service + "screencap -p",
-                  7000,
+                  14000,
                 );
               } catch (e) {
                 console.warn(
@@ -1304,22 +1310,23 @@
 
               await new Promise((res) => {
                 // Initial timeout if no data at all arrives
+                // MagicOS can take 6-8s on first screencap — use 12s to be safe
                 let timer = setTimeout(() => {
                   console.log(
-                    `[cap] ${transportMode}: no data in 5s — giving up`,
+                    `[cap] ${transportMode}: no data in 12s — giving up`,
                   );
                   res();
-                }, 5000);
+                }, 12000);
 
                 shell.onData = (chunk) => {
-                  // Reset deadline: 3s after last byte received
+                  // Reset deadline: 5s after last byte (PNG can arrive in bursts)
                   clearTimeout(timer);
                   timer = setTimeout(() => {
                     console.log(
                       `[cap] ${transportMode}: data stopped (${imgBuf.length} bytes) — resolving`,
                     );
                     res();
-                  }, 3000);
+                  }, 5000);
 
                   let payload;
                   if (useSP2) {
@@ -1373,6 +1380,8 @@
             }
 
             // ── drawFrame: decode and render one image buffer ───────────
+            // Uses createImageBitmap (fast) with an <img> URL fallback for
+            // Vercel/GitHub Pages where blob: URLs may be blocked by CSP.
             async function drawFrame(buf) {
               const mime = getImageMime(buf);
               if (!mime) {
@@ -1386,6 +1395,8 @@
                 );
                 return false;
               }
+
+              // --- Path A: createImageBitmap (preferred, lowest latency) ---
               try {
                 const blob = new Blob([buf], { type: mime });
                 const bmp = await createImageBitmap(blob);
@@ -1397,7 +1408,7 @@
                   canvas.height = bmp.height;
                 }
                 ctx.drawImage(bmp, 0, 0);
-                bmp.close();
+                bmp.close(); // explicit close — avoids GPU memory leak
                 scFrameCount++;
                 frameCount++;
                 idleOverlay.style.display = "none";
@@ -1407,10 +1418,51 @@
                     `screencap · ${canvas.width}×${canvas.height} · ${workingMode}`,
                   );
                 return true;
-              } catch (e) {
+              } catch (bitmapErr) {
                 console.warn(
                   "[draw] createImageBitmap failed:",
-                  e.message,
+                  bitmapErr.message,
+                  "— trying img fallback",
+                );
+              }
+
+              // --- Path B: <img> + drawImage fallback (Vercel/CSP safe) ---
+              try {
+                const blob = new Blob([buf], { type: mime });
+                const url = URL.createObjectURL(blob);
+                await new Promise((res, rej) => {
+                  const img = new Image();
+                  img.onload = () => {
+                    if (
+                      canvas.width !== img.naturalWidth ||
+                      canvas.height !== img.naturalHeight
+                    ) {
+                      canvas.width = img.naturalWidth;
+                      canvas.height = img.naturalHeight;
+                    }
+                    ctx.drawImage(img, 0, 0);
+                    URL.revokeObjectURL(url);
+                    res();
+                  };
+                  img.onerror = (e) => {
+                    URL.revokeObjectURL(url);
+                    rej(new Error("img load error"));
+                  };
+                  img.src = url;
+                });
+                scFrameCount++;
+                frameCount++;
+                idleOverlay.style.display = "none";
+                if (scFrameCount === 1)
+                  setStatus(
+                    "connected",
+                    `screencap · ${canvas.width}×${canvas.height} · ${workingMode} (img)`,
+                  );
+                return true;
+              } catch (imgErr) {
+                console.warn(
+                  "[draw] img fallback failed:",
+                  imgErr.message,
                   "(buf len:",
                   buf.length,
                   ")",
@@ -1421,6 +1473,25 @@
 
             // ── Screencap loop ──────────────────────────────────────────
             async function runScreencapLoop() {
+              // ── HELPER: kill any stale screencap process ──────────────
+              // MagicOS keeps the screencap process alive after a stream closes.
+              // If we probe exec-out:screencap -p while the old one is still
+              // running, the device sends A_CLSE (service busy) → cascade fails.
+              // Fix: always kill before each probe AND before each loop frame.
+              async function killScreencap() {
+                try {
+                  const k = await adbConn.openStream(
+                    "shell:killall screencap 2>/dev/null; sleep 0.15",
+                    4000,
+                  );
+                  await new Promise((res) => {
+                    k.onClose = res;
+                    k.onError = res;
+                    setTimeout(res, 1500); // safety bail
+                  });
+                } catch (_) {}
+              }
+
               // ── PROBE PHASE: find working transport (FIX E) ──
               // Try 4 modes in order; first one that yields a valid image wins.
               const probeModes = [
@@ -1432,7 +1503,14 @@
 
               for (const mode of probeModes) {
                 if (aborted || scAborted) return;
-                setStatus("connecting", `Probing ${mode}…`);
+                setStatus(
+                  "connecting",
+                  `Killing stale screencap, probing ${mode}…`,
+                );
+
+                // Kill any leftover screencap process from the previous probe
+                await killScreencap();
+                if (aborted || scAborted) return;
 
                 const buf = await captureFrame(mode);
                 const mime = buf ? getImageMime(buf) : null;
@@ -1479,6 +1557,12 @@
               const MAX_FAILS = 5;
 
               while (!aborted && !scAborted) {
+                // Kill any still-running screencap before starting the next one.
+                // This is the key fix for the A_CLSE cascade on MagicOS —
+                // the previous stream's process must be dead before we open a new one.
+                await killScreencap();
+                if (aborted || scAborted) return;
+
                 const buf = await captureFrame(workingMode);
                 const mime = buf ? getImageMime(buf) : null;
 
@@ -1525,6 +1609,62 @@
           const [size, bitrate] = qualVal.split(",");
           const recCmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} --time-limit 180 -`;
           setStatus("connecting", "Starting screenrecord… (keep screen on!)");
+
+          // Pre-flight check: some devices (Honor/MagicOS ROMs) outright reject
+          // --output-format=h264. Test with a 1-second probe stream; if we get
+          // 0 bytes or an immediate A_CLSE, auto-switch to screencap mode.
+          let h264Supported = true;
+          try {
+            const testStream = await adbConn.openStream(
+              "exec-out:" + recCmd,
+              6000,
+            );
+            const testResult = await new Promise((res) => {
+              let gotBytes = false;
+              const bail = setTimeout(() => res(gotBytes), 3000);
+              testStream.onData = (d) => {
+                if (d.length > 0) {
+                  gotBytes = true;
+                  clearTimeout(bail);
+                  res(true);
+                }
+              };
+              testStream.onClose = () => {
+                clearTimeout(bail);
+                res(gotBytes);
+              };
+              testStream.onError = () => {
+                clearTimeout(bail);
+                res(false);
+              };
+            });
+            h264Supported = testResult;
+            try {
+              testStream.close();
+            } catch (_) {}
+          } catch (e) {
+            console.warn("[H264 preflight] rejected:", e.message);
+            h264Supported = false;
+          }
+
+          if (!h264Supported) {
+            console.warn(
+              "[H264 preflight] Device rejected screenrecord H264 — falling back to screencap mode",
+            );
+            setStatus(
+              "connecting",
+              "H264 rejected by device — switching to screencap…",
+            );
+            qualitySelect.value = "screencap";
+            // Re-invoke connect logic as screencap — simplest safe path
+            btnConnect.disabled = false;
+            btnDisconnect.disabled = true;
+            streaming = false;
+            adbConn.disconnect();
+            adbConn = null;
+            setTimeout(() => btnConnect.click(), 400);
+            return;
+          }
 
           class ShellProtoStripper {
             constructor() {
