@@ -38,7 +38,6 @@
         flex-direction: column;
         overflow: hidden;
       }
-
       header {
         display: flex;
         align-items: center;
@@ -88,7 +87,7 @@
         letter-spacing: 0.03em;
         color: var(--muted);
         transition: all 0.3s;
-        max-width: 320px;
+        max-width: 340px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -452,8 +451,17 @@
         <div class="step">
           <div class="step-num">4</div>
           <div class="step-text">
+            <strong>Honor/MagicOS:</strong> Pull down the notification shade and
+            tap the USB connection notice → select
+            <strong>File Transfer (MTP)</strong> — this activates ADB properly.
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">5</div>
+          <div class="step-text">
             Click <code>CONNECT PHONE</code>, select your device, then
-            <strong>tap Allow</strong> on your phone screen if prompted.
+            <strong>tap Allow</strong> on your phone screen if prompted. Keep
+            screen <strong>unlocked &amp; on</strong> throughout.
           </div>
         </div>
         <div class="setup-actions">
@@ -528,34 +536,36 @@
 
     <script>
       // ════════════════════════════════════════════════════════════════════════
-      //  VLC Phone Mirror  —  Native WebUSB ADB, zero dependencies, offline
+      //  VLC Phone Mirror  — Native WebUSB ADB, zero dependencies, offline
       //
-      //  HANDSHAKE BUG FIXES (v3):
+      //  BUG FIXES in this build (v4 — Honor/MagicOS deep fix):
       //
-      //  FIX 1 — _readLoop no longer auto-starts in constructor.
-      //           Previously it started immediately and consumed the first
-      //           AUTH_TOKEN packet before connectAdb() had set up a handler,
-      //           so the packet was silently dropped → immediate timeout.
-      //           Now: startReadLoop() is called AFTER the auth handler is set.
+      //  FIX A — CRITICAL HANG: openStream() now rejects (not silently hangs)
+      //           when MagicOS sends A_CLSE instead of A_OKAY for exec-out.
+      //           Also adds a per-call timeout so nothing can hang forever.
       //
-      //  FIX 2 — Auth now handles TWO rounds of AUTH_TOKEN correctly:
-      //           • Round 1 → send RSA signature (fast path if already trusted)
-      //           • Round 2 → phone rejects sig, sends another AUTH_TOKEN;
-      //                       we send AUTH_RSAPUBLICKEY + wait for user to
-      //                       tap "Allow" on the phone screen.
-      //           Old code sent pubkey only if crypto.subtle.sign() threw,
-      //           which it never does, so first-time auth was broken.
+      //  FIX B — CRITICAL CORRUPTION: stripCR() was corrupting PNG data.
+      //           PNG header contains 0x0D 0x0A at bytes 4-5. Stripping that
+      //           CR made every PNG invalid → createImageBitmap always threw.
+      //           stripCR is now REMOVED. SP2 stripping already gives clean
+      //           raw stdout bytes; exec-out never does CRLF translation.
       //
-      //  FIX 3 — MAX_PAYLOAD is now 256 KB (standard ADB value).
-      //           1 MB caused some devices to reject CNXN.
+      //  FIX C — SP2Stripper is now created fresh per captureFrame() call.
+      //           The old code reused one instance across frames, mixing
+      //           buffered bytes from previous streams into new ones.
       //
-      //  FIX 4 — USB reads always request 65536 bytes (large aligned buffer).
-      //           Asking for tiny reads (e.g. 3 bytes) on a bulk endpoint
-      //           stalls ChromeOS USB. We accumulate in a byte buffer and
-      //           parse complete ADB messages out of it.
+      //  FIX D — JPEG support added. Some Honor screencap -p builds output
+      //           JPEG (FFD8) instead of PNG (8950). Both are now handled.
+      //
+      //  FIX E — 4-mode probe order: exec-out-raw → exec-out-sp2 →
+      //           shell-sp2 → shell-raw. Finds the correct MagicOS transport
+      //           automatically, with verbose console logging at each step.
+      //
+      //  FIX F — Fail counter: 5 consecutive bad frames → error + auto-stop.
+      //           Prevents infinite silent loops when the phone locks.
       // ════════════════════════════════════════════════════════════════════════
 
-      // ── DOM refs first ──
+      // ── DOM refs ──
       const canvas = document.getElementById("display");
       const ctx = canvas.getContext("2d");
       const idleOverlay = document.getElementById("idle-overlay");
@@ -581,6 +591,7 @@
       function setStatus(state, msg) {
         statusPill.className = state;
         statusText.textContent = msg;
+        console.log(`[status] ${state || "idle"}: ${msg}`);
       }
 
       let angle = 0,
@@ -616,7 +627,6 @@
           this.buf = new Uint8Array(0);
           this.sps = null;
           this.pps = null;
-          this.ready = false;
         }
         push(inc) {
           const m = new Uint8Array(this.buf.length + inc.length);
@@ -646,9 +656,6 @@
           this.buf = prev >= 0 ? d.slice(prev) : d;
           return out;
         }
-        nalType(nal) {
-          return nal[0] & 0x1f;
-        }
       }
 
       // ── ADB protocol constants ──
@@ -659,7 +666,7 @@
         A_CLSE = 0x45534c43,
         A_WRTE = 0x45545257;
       const ADB_VERSION = 0x01000001;
-      const MAX_PAYLOAD = 256 * 1024; // FIX 3
+      const MAX_PAYLOAD = 256 * 1024;
       const AUTH_TOKEN = 1,
         AUTH_SIGNATURE = 2,
         AUTH_RSAPUBLICKEY = 3;
@@ -688,7 +695,7 @@
         return new Uint8Array(buf);
       }
 
-      // ── AdbConnection (FIX 1: read loop not auto-started) ──
+      // ── AdbConnection ──
       class AdbConnection {
         constructor(device, intf, epIn, epOut) {
           this.device = device;
@@ -699,12 +706,10 @@
           this._streams = new Map();
           this._rxBuf = new Uint8Array(0);
           this._closed = false;
-          this._onMessage = null; // set externally before startReadLoop()
+          this._onMessage = null;
         }
 
         async _send(data) {
-          // Retry up to 4 times on transient NetworkError (common on Honor/MagicOS
-          // during the first few packets after USB endpoint activation).
           let lastErr;
           for (let attempt = 0; attempt < 4; attempt++) {
             try {
@@ -712,7 +717,7 @@
               return;
             } catch (e) {
               lastErr = e;
-              if (e.name !== "NetworkError") throw e; // non-transient, bail immediately
+              if (e.name !== "NetworkError") throw e;
               await new Promise((r) => setTimeout(r, 60 * (attempt + 1)));
             }
           }
@@ -741,14 +746,9 @@
           return msg;
         }
 
-        // Read loop: uses endpoint maxPacketSize-aligned reads to avoid ChromeOS
-        // USB bulk transfer stalls. TransferError mid-stream is retried up to 8
-        // times (it's transient on ChromeOS); only fatal errors break the loop.
         async startReadLoop() {
-          // Use the endpoint's own maxPacketSize, scaled up to a safe multiple.
-          // 16 * 512 = 8192 is safe; large enough for throughput, aligned for USB.
           const pktSize = this.epIn.packetSize || 512;
-          const readSize = pktSize * 16; // 8192 bytes — safe for ChromeOS ADB bulk
+          const readSize = pktSize * 16;
           let retries = 0;
           while (!this._closed) {
             try {
@@ -756,7 +756,7 @@
                 this.epIn.endpointNumber,
                 readSize,
               );
-              retries = 0; // reset retry counter on any successful read
+              retries = 0;
               if (r.data && r.data.byteLength > 0)
                 this._append(
                   new Uint8Array(
@@ -771,13 +771,11 @@
               }
             } catch (e) {
               if (this._closed) break;
-              // TransferError on ChromeOS is often transient — retry a few times
               if (e.name === "NetworkError" && retries < 8) {
                 retries++;
-                await new Promise((r) => setTimeout(r, 50 * retries)); // back-off
+                await new Promise((r) => setTimeout(r, 50 * retries));
                 continue;
               }
-              // Fatal error — notify all open streams via onError then exit
               for (const [, s] of this._streams) {
                 if (s.onError) s.onError(e);
                 else s.reject?.(e);
@@ -793,7 +791,6 @@
             const s = this._streams.get(arg1);
             if (s) {
               s.onData?.(data);
-              // Send OKAY ack — ignore send errors (device may have unplugged)
               this._send(makeMsg(A_OKAY, arg1, arg0, null)).catch(() => {});
             }
           } else if (cmd === A_OKAY) {
@@ -801,20 +798,39 @@
             if (s && !s.remoteId) {
               s.remoteId = arg1;
               s.resolve?.(s);
-              s.resolve = null; // clear so it can't be called twice
+              s.resolve = null;
             }
           } else if (cmd === A_CLSE) {
+            // ── FIX A: reject pending openStream promises on A_CLSE ──
+            // MagicOS sends A_CLSE (not A_OKAY) when a service is unsupported
+            // (e.g. exec-out: on some firmwares). Without this fix, openStream()
+            // hangs forever because s.resolve is never called.
             const s = this._streams.get(arg1);
             if (s) {
-              s.onClose?.();
+              if (s.resolve) {
+                // Stream was never opened (no A_OKAY received yet) → reject
+                console.warn(
+                  `[ADB] A_CLSE for stream ${arg1} before A_OKAY — service rejected by device`,
+                );
+                s.reject?.(
+                  new Error(
+                    "ADB service rejected by device (A_CLSE before A_OKAY)",
+                  ),
+                );
+              } else {
+                // Normally opened stream being closed by device
+                s.onClose?.();
+              }
               this._streams.delete(arg1);
             }
           }
         }
 
-        async openStream(service) {
+        // ── FIX A (part 2): openStream with per-call timeout ──
+        // Previously a Promise that never resolved if device sent A_CLSE.
+        async openStream(service, timeoutMs = 8000) {
           const localId = this._localId++;
-          return new Promise((resolve, reject) => {
+          const streamPromise = new Promise((resolve, reject) => {
             const s = {
               localId,
               remoteId: null,
@@ -822,6 +838,7 @@
               reject,
               onData: null,
               onClose: null,
+              onError: null,
               write: async (d) => {
                 const b = d instanceof Uint8Array ? d : enc(d);
                 await this._send(makeMsg(A_WRTE, localId, s.remoteId, b));
@@ -834,8 +851,30 @@
               },
             };
             this._streams.set(localId, s);
-            this._send(makeMsg(A_OPEN, localId, 0, service + "\0"));
+            this._send(makeMsg(A_OPEN, localId, 0, service + "\0")).catch(
+              reject,
+            );
           });
+
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `openStream("${service}") timed out after ${timeoutMs}ms`,
+                  ),
+                ),
+              timeoutMs,
+            ),
+          );
+
+          try {
+            return await Promise.race([streamPromise, timeoutPromise]);
+          } catch (e) {
+            // Clean up the pending stream entry if timeout or rejection
+            this._streams.delete(localId);
+            throw e;
+          }
         }
 
         async disconnect() {
@@ -850,8 +889,6 @@
       }
 
       // ── Crypto helpers ──
-      // Pre-generate RSA key at page load so it is already resolved by the time
-      // the user clicks Connect — eliminates the ~250ms INP block on the button.
       const _keyPairPromise = crypto.subtle.generateKey(
         {
           name: "RSASSA-PKCS1-v1_5",
@@ -879,10 +916,9 @@
 
       // ── connectAdb ──
       async function connectAdb(device) {
-        const vendorId = device.vendorId;
-        const productId = device.productId;
+        const vendorId = device.vendorId,
+          productId = device.productId;
 
-        // Wait for device to re-appear after MagicOS re-enumeration
         async function waitForReconnect(ms = 10000) {
           const deadline = Date.now() + ms;
           while (Date.now() < deadline) {
@@ -898,7 +934,6 @@
           );
         }
 
-        // Open + claim + endpoint setup on a given USBDevice object
         async function openAndClaim(dev) {
           try {
             await dev.close();
@@ -935,12 +970,9 @@
           try {
             await dev.claimInterface(adbIntf.interfaceNumber);
           } catch (_) {}
-          // Do NOT call selectAlternateInterface or clearHalt — these trigger
-          // MagicOS re-enumeration. Just claim and go.
 
           let epIn = null,
             epOut = null;
-          // Read endpoints directly from the matched alternate descriptor
           for (const ep of adbAlt.endpoints) {
             if (ep.type === "bulk") {
               if (ep.direction === "in") epIn = ep;
@@ -950,14 +982,10 @@
           if (!epIn || !epOut)
             throw new Error("ADB bulk endpoints not found — replug cable");
 
-          // Longer settle — MagicOS needs time after claimInterface
-          await new Promise((r) => setTimeout(r, 500));
-
+          await new Promise((r) => setTimeout(r, 500)); // MagicOS settle time
           return { dev, adbIntf, epIn, epOut };
         }
 
-        // Full connect attempt: openAndClaim + ADB handshake
-        // Retried up to 3 times to handle MagicOS re-enumeration at any stage
         async function attemptConnect(dev) {
           const {
             dev: liveDevice,
@@ -980,6 +1008,7 @@
               try {
                 if (msg.cmd === A_AUTH && msg.arg0 === AUTH_TOKEN) {
                   authRound++;
+                  console.log(`[ADB auth] round ${authRound}`);
                   if (authRound === 1) {
                     const sig = await signToken(keyPair, msg.data);
                     await conn._send(makeMsg(A_AUTH, AUTH_SIGNATURE, 0, sig));
@@ -991,6 +1020,7 @@
                   }
                 } else if (msg.cmd === A_CNXN) {
                   clearTimeout(timeout);
+                  console.log("[ADB] CNXN accepted — handshake complete");
                   conn._onMessage = (m) => conn._dispatch(m);
                   resolve();
                 }
@@ -1011,7 +1041,6 @@
           return conn;
         }
 
-        // Retry loop — catches re-enumeration at any point (claim OR first send)
         let lastDev = device;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
@@ -1039,12 +1068,10 @@
           return;
         }
 
-        // Yield to the browser paint cycle first so the button visually
-        // responds (disabled state) before any async work runs — fixes INP.
-        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0)); // yield for paint
 
         const qualVal0 = qualitySelect.value;
-        const [size0, bitrate0] =
+        const [size0] =
           qualVal0 === "screencap" ? ["screencap", ""] : qualVal0.split(",");
         statRes.textContent = size0;
         statRes.classList.add("active");
@@ -1056,7 +1083,6 @@
           adbConn = null,
           _watchdogRef = null;
 
-        // helper so watchdog is always cleared no matter where stopStream is called
         const clearWatchdog = () => {
           if (_watchdogRef) {
             clearTimeout(_watchdogRef);
@@ -1065,13 +1091,10 @@
         };
 
         stopStream = () => {
-          // ── Instant UI update (paint frame) ──────────────────────────────
-          // Set flags first so any in-flight callbacks see aborted=true
           aborted = true;
           streaming = false;
           clearWatchdog();
 
-          // Update all UI synchronously so the button feels instant
           setStatus("", "Disconnected — plug in & click Connect Phone");
           authNotice.style.display = "none";
           btnConnect.disabled = false;
@@ -1085,19 +1108,14 @@
           byteCount = 0;
           ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-          // ── Heavy USB teardown deferred — fixes INP on Stop button ───────
-          // adbConn.disconnect() calls releaseInterface + device.close(), both
-          // of which block the main thread. Defer them so the browser can paint
-          // the updated UI first, then clean up.
           const connToClose = adbConn;
           const handlerToRemove = stopStream._usbHandler;
           adbConn = null;
           stopStream._usbHandler = null;
           setTimeout(() => {
             connToClose?.disconnect();
-            if (handlerToRemove) {
+            if (handlerToRemove)
               navigator.usb.removeEventListener("disconnect", handlerToRemove);
-            }
           }, 0);
         };
         btnDisconnect.onclick = stopStream;
@@ -1108,13 +1126,11 @@
           try {
             device = await navigator.usb.requestDevice({
               filters: [
-                // broad match + strict match — covers all Chromebook ADB variants
                 { classCode: 0xff, subclassCode: 0x42 },
                 { classCode: 0xff, subclassCode: 0x42, protocolCode: 0x01 },
               ],
             });
           } catch (pickErr) {
-            // User cancelled the picker, or no device matched — reset quietly
             const cancelled = pickErr.name === "NotFoundError";
             setStatus(
               "",
@@ -1128,10 +1144,7 @@
           }
           if (aborted) return;
 
-          // USB disconnect handler is set after connectAdb resolves,
-          // because MagicOS may re-enumerate the device during claim.
           stopStream._usbHandler = null;
-
           setStatus("connecting", "Authenticating ADB…");
           authNotice.style.display = "block";
 
@@ -1141,8 +1154,6 @@
             return;
           }
 
-          // After connectAdb, liveDevice may differ from `device` if MagicOS
-          // re-enumerated — update the disconnect listener to track the live device.
           const liveDevice = adbConn.device;
           navigator.usb.removeEventListener(
             "disconnect",
@@ -1163,40 +1174,32 @@
           const qualVal = qualitySelect.value;
           const isScreencapMode = qualVal === "screencap";
 
-          // ── SCREENCAP MODE (Honor/EMUI/MagicOS fix) ──────────────────────────
-          // MagicOS 7.1 breaks screenrecord --output-format=h264 over ADB.
-          // Instead: repeatedly run `screencap -p` which outputs a PNG,
-          // detect the JPEG/PNG boundary, decode via createImageBitmap,
-          // draw to canvas. ~8–12 fps — reliable on all Honor devices.
+          // ════════════════════════════════════════════════════════════════
+          //  SCREENCAP MODE  (Honor / EMUI / MagicOS)
+          //
+          //  Uses `screencap -p` which outputs a single PNG (or JPEG on some
+          //  Honor builds). We loop continuously, drawing each frame to canvas.
+          //
+          //  Transport probe order (FIX E):
+          //    1. exec-out:  raw bytes — fastest, no framing overhead
+          //    2. exec-out:  with SP2 stripping — some MagicOS builds wrap exec-out
+          //    3. shell:     with SP2 stripping — standard fallback
+          //    4. shell:     raw bytes — very old devices without SP2
+          //
+          //  FIX B: stripCR() is GONE. It corrupted PNG/JPEG binary data.
+          //  FIX C: SP2Stripper is created fresh for EVERY captureFrame() call.
+          // ════════════════════════════════════════════════════════════════
           if (isScreencapMode) {
-            setStatus("connecting", "screencap mode — first frame coming…");
+            setStatus("connecting", "screencap mode — probing transport…");
             streaming = true;
             let scAborted = false;
             let scFrameCount = 0;
+            let workingMode = null;
 
-            // We need one ADB shell stream per screencap invocation.
-            // To avoid stream-open overhead each frame, we use a persistent
-            // shell stream with newline-separated commands.
-            // Each `screencap -p` writes PNG bytes then exits; we re-open per frame.
-
-            // Strip \r\n → \n corruption MagicOS injects into shell: binary streams
-            function stripCR(chunk) {
-              const out = new Uint8Array(chunk.length);
-              let len = 0;
-              for (let i = 0; i < chunk.length; i++) {
-                if (
-                  chunk[i] === 0x0d &&
-                  i + 1 < chunk.length &&
-                  chunk[i + 1] === 0x0a
-                )
-                  continue;
-                out[len++] = chunk[i];
-              }
-              return out.slice(0, len);
-            }
-
-            // Shell Protocol v2 stripper — MagicOS wraps shell: output in SP2 frames
-            // Frame: [id:1B][type:1B][len:4B LE][payload]  type 1=stdout
+            // ── Shell Protocol v2 stripper ──────────────────────────────
+            // Frame: [id:1B][type:1B][len:4B LE][payload]
+            // type 1=stdout, 2=stderr, 3=exit
+            // IMPORTANT: instantiate ONE PER STREAM, never share across calls.
             class SP2Stripper {
               constructor() {
                 this.buf = new Uint8Array(0);
@@ -1215,12 +1218,25 @@
                     (this.buf[i + 3] << 8) |
                     (this.buf[i + 4] << 16) |
                     (this.buf[i + 5] << 24);
-                  if (len < 0 || len > 4 * 1024 * 1024) {
+                  // Guard against corrupt frames
+                  if (len < 0 || len > 8 * 1024 * 1024) {
+                    console.warn(
+                      `[SP2] corrupt frame at offset ${i}: type=${type} len=${len}`,
+                    );
                     i++;
                     continue;
                   }
                   if (i + 6 + len > this.buf.length) break;
                   if (type === 1) out.push(this.buf.slice(i + 6, i + 6 + len));
+                  else if (type === 2)
+                    console.log(
+                      "[SP2 stderr]",
+                      new TextDecoder()
+                        .decode(this.buf.slice(i + 6, i + 6 + len))
+                        .trim(),
+                    );
+                  else if (type === 3)
+                    console.log("[SP2 exit]", this.buf[i + 6]);
                   i += 6 + len;
                 }
                 this.buf = this.buf.slice(i);
@@ -1236,146 +1252,264 @@
               }
             }
 
-            const runScreencapLoop = async () => {
-              // Probe: try exec-out first (no framing), fall back to shell: (SP2 framing)
-              // MagicOS 7.1 blocks exec-out silently → we detect zero bytes in 3s and switch
-              let useShell = false;
-              let sp2 = null;
+            // ── Image type detection ────────────────────────────────────
+            function getImageMime(buf) {
+              if (!buf || buf.length < 4) return null;
+              // PNG: 89 50 4E 47  (\x89PNG)
+              if (
+                buf[0] === 0x89 &&
+                buf[1] === 0x50 &&
+                buf[2] === 0x4e &&
+                buf[3] === 0x47
+              )
+                return "image/png";
+              // JPEG: FF D8
+              if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
+              return null;
+            }
 
-              const tryTransport = async (service) => {
-                let pngBuf = new Uint8Array(0);
-                let shell;
-                try {
-                  shell = await adbConn.openStream(service + "screencap -p");
-                } catch (e) {
-                  return null; // stream open failed
-                }
-                await new Promise((res) => {
-                  let frameTimer = setTimeout(() => res(), 4000); // 4s timeout per frame
-                  shell.onData = (chunk) => {
-                    clearTimeout(frameTimer);
-                    frameTimer = setTimeout(() => res(), 3000);
-                    let raw = chunk;
-                    if (useShell && sp2) {
-                      const stripped = sp2.push(chunk);
-                      if (!stripped) return;
-                      raw = stripped;
-                    }
-                    const clean = stripCR(raw);
-                    const merged = new Uint8Array(pngBuf.length + clean.length);
-                    merged.set(pngBuf);
-                    merged.set(clean, pngBuf.length);
-                    pngBuf = merged;
-                    byteCount += chunk.length;
-                  };
-                  shell.onClose = () => {
-                    clearTimeout(frameTimer);
-                    res();
-                  };
-                  shell.onError = () => {
-                    clearTimeout(frameTimer);
-                    res();
-                  };
-                });
-                return pngBuf;
-              };
+            // ── captureFrame: run one screencap and return raw image bytes ──
+            // transportMode: 'exec-out-raw' | 'exec-out-sp2' | 'shell-sp2' | 'shell-raw'
+            //
+            // ── FIX B: NO stripCR anywhere in this function ──
+            // ── FIX C: fresh SP2Stripper per call ──
+            async function captureFrame(transportMode) {
+              if (aborted || scAborted) return null;
 
-              // First frame probe — try exec-out:
-              setStatus("connecting", "Probing exec-out transport…");
-              let probe = await tryTransport("exec-out:");
-              if (!probe || probe.length < 8 || probe[0] !== 0x89) {
-                // exec-out gave nothing or garbage — try shell: with SP2 stripping
-                setStatus(
-                  "connecting",
-                  "Switching to shell: transport (MagicOS)…",
+              const isExecOut = transportMode.startsWith("exec-out");
+              const useSP2 = transportMode.endsWith("sp2");
+              const service = isExecOut ? "exec-out:" : "shell:";
+
+              console.log(
+                `[cap] ${transportMode}: opening ${service}screencap -p …`,
+              );
+
+              let shell;
+              try {
+                // ── FIX A: openStream now has a timeout; rejects on A_CLSE ──
+                shell = await adbConn.openStream(
+                  service + "screencap -p",
+                  7000,
                 );
-                useShell = true;
-                sp2 = new SP2Stripper();
-                probe = await tryTransport("shell:");
+              } catch (e) {
+                console.warn(
+                  `[cap] ${transportMode}: openStream failed — ${e.message}`,
+                );
+                return null;
               }
-              if (!probe || probe.length < 8) {
+
+              // Fresh SP2Stripper for THIS stream only (FIX C)
+              const sp2 = useSP2 ? new SP2Stripper() : null;
+              let imgBuf = new Uint8Array(0);
+
+              await new Promise((res) => {
+                // Initial timeout if no data at all arrives
+                let timer = setTimeout(() => {
+                  console.log(
+                    `[cap] ${transportMode}: no data in 5s — giving up`,
+                  );
+                  res();
+                }, 5000);
+
+                shell.onData = (chunk) => {
+                  // Reset deadline: 3s after last byte received
+                  clearTimeout(timer);
+                  timer = setTimeout(() => {
+                    console.log(
+                      `[cap] ${transportMode}: data stopped (${imgBuf.length} bytes) — resolving`,
+                    );
+                    res();
+                  }, 3000);
+
+                  let payload;
+                  if (useSP2) {
+                    payload = sp2.push(chunk);
+                    if (!payload) return; // SP2 frame not yet complete
+                  } else {
+                    // exec-out-raw or shell-raw: use raw bytes directly.
+                    // ── FIX B: DO NOT apply stripCR here! ──
+                    // PNG header bytes 4-5 are 0x0D 0x0A. stripCR would delete
+                    // the 0x0D making the PNG signature invalid. Same for JPEG
+                    // which can contain 0x0D 0x0A anywhere in compressed data.
+                    payload = chunk;
+                  }
+
+                  const merged = new Uint8Array(imgBuf.length + payload.length);
+                  merged.set(imgBuf);
+                  merged.set(payload, imgBuf.length);
+                  imgBuf = merged;
+                  byteCount += chunk.length;
+
+                  // Log first bytes only once per stream for debugging
+                  const prevLen = imgBuf.length - payload.length;
+                  if (prevLen < 16 && imgBuf.length >= 4) {
+                    const hex = Array.from(
+                      imgBuf.slice(0, Math.min(16, imgBuf.length)),
+                    )
+                      .map((x) => x.toString(16).padStart(2, "0"))
+                      .join(" ");
+                    const mime = getImageMime(imgBuf);
+                    console.log(
+                      `[cap] ${transportMode}: first bytes = [${hex}] → ${mime || "UNKNOWN (bad transport?)"}`,
+                    );
+                  }
+                };
+
+                shell.onClose = () => {
+                  clearTimeout(timer);
+                  console.log(
+                    `[cap] ${transportMode}: stream closed (${imgBuf.length} bytes)`,
+                  );
+                  res();
+                };
+                shell.onError = (e) => {
+                  clearTimeout(timer);
+                  console.warn(`[cap] ${transportMode}: stream error:`, e);
+                  res();
+                };
+              });
+
+              return imgBuf.length > 0 ? imgBuf : null;
+            }
+
+            // ── drawFrame: decode and render one image buffer ───────────
+            async function drawFrame(buf) {
+              const mime = getImageMime(buf);
+              if (!mime) {
+                const hex = buf
+                  ? Array.from(buf.slice(0, 8))
+                      .map((x) => x.toString(16))
+                      .join(" ")
+                  : "null";
+                console.warn(
+                  `[draw] Bad image header: [${hex}] — frame dropped`,
+                );
+                return false;
+              }
+              try {
+                const blob = new Blob([buf], { type: mime });
+                const bmp = await createImageBitmap(blob);
+                if (
+                  canvas.width !== bmp.width ||
+                  canvas.height !== bmp.height
+                ) {
+                  canvas.width = bmp.width;
+                  canvas.height = bmp.height;
+                }
+                ctx.drawImage(bmp, 0, 0);
+                bmp.close();
+                scFrameCount++;
+                frameCount++;
+                idleOverlay.style.display = "none";
+                if (scFrameCount === 1)
+                  setStatus(
+                    "connected",
+                    `screencap · ${canvas.width}×${canvas.height} · ${workingMode}`,
+                  );
+                return true;
+              } catch (e) {
+                console.warn(
+                  "[draw] createImageBitmap failed:",
+                  e.message,
+                  "(buf len:",
+                  buf.length,
+                  ")",
+                );
+                return false;
+              }
+            }
+
+            // ── Screencap loop ──────────────────────────────────────────
+            async function runScreencapLoop() {
+              // ── PROBE PHASE: find working transport (FIX E) ──
+              // Try 4 modes in order; first one that yields a valid image wins.
+              const probeModes = [
+                "exec-out-raw",
+                "exec-out-sp2",
+                "shell-sp2",
+                "shell-raw",
+              ];
+
+              for (const mode of probeModes) {
+                if (aborted || scAborted) return;
+                setStatus("connecting", `Probing ${mode}…`);
+
+                const buf = await captureFrame(mode);
+                const mime = buf ? getImageMime(buf) : null;
+
+                console.log(
+                  `[probe] ${mode}: ${buf?.length ?? 0} bytes, mime=${mime ?? "invalid"}`,
+                );
+
+                if (mime && buf.length > 16) {
+                  workingMode = mode;
+                  console.log(`[probe] ✓ Working transport found: ${mode}`);
+
+                  // Draw the probe frame immediately
+                  const ok = await drawFrame(buf);
+                  if (!ok) {
+                    console.warn(
+                      `[probe] ${mode} image decoded but drawFrame failed — trying next`,
+                    );
+                    workingMode = null;
+                    continue;
+                  }
+                  break;
+                }
+              }
+
+              if (!workingMode) {
+                console.error("[probe] ✗ All 4 transports failed.");
+                console.error(
+                  "        Check: phone screen ON and unlocked? USB auth accepted? ADB Debugging ON?",
+                );
+                console.error(
+                  "        On MagicOS: USB mode = File Transfer (MTP)?",
+                );
                 setStatus(
                   "error",
-                  "screencap: no data on either transport. Screen on? USB auth done?",
+                  "No image on any transport. Screen on? USB auth OK? Tap Allow on phone.",
                 );
                 stopStream();
                 return;
               }
 
-              // Draw the probe frame immediately
-              const drawFrame = async (pngBuf) => {
-                if (!pngBuf || pngBuf.length < 8) return false;
-                if (
-                  pngBuf[0] !== 0x89 ||
-                  pngBuf[1] !== 0x50 ||
-                  pngBuf[2] !== 0x4e ||
-                  pngBuf[3] !== 0x47
-                ) {
-                  console.warn(
-                    "Bad PNG header:",
-                    Array.from(pngBuf.slice(0, 8)).map((x) => x.toString(16)),
-                  );
-                  return false;
-                }
-                try {
-                  const blob = new Blob([pngBuf], { type: "image/png" });
-                  const bmp = await createImageBitmap(blob);
-                  if (
-                    canvas.width !== bmp.width ||
-                    canvas.height !== bmp.height
-                  ) {
-                    canvas.width = bmp.width;
-                    canvas.height = bmp.height;
-                  }
-                  ctx.drawImage(bmp, 0, 0);
-                  bmp.close();
-                  scFrameCount++;
-                  frameCount++;
-                  idleOverlay.style.display = "none";
-                  if (scFrameCount === 1)
-                    setStatus(
-                      "connected",
-                      `screencap · ${canvas.width}×${canvas.height} · ${useShell ? "shell" : "exec-out"}`,
-                    );
-                  return true;
-                } catch (e) {
-                  console.warn("screencap decode:", e);
-                  return false;
-                }
-              };
-
-              await drawFrame(probe);
+              // ── STREAMING LOOP ──────────────────────────────────────
+              let failCount = 0;
+              const MAX_FAILS = 5;
 
               while (!aborted && !scAborted) {
-                let pngBuf;
-                if (!useShell) {
-                  pngBuf = await tryTransport("exec-out:");
-                  if (!pngBuf || pngBuf.length < 8) {
-                    // exec-out degraded mid-stream — switch
-                    useShell = true;
-                    sp2 = new SP2Stripper();
-                    pngBuf = await tryTransport("shell:");
+                const buf = await captureFrame(workingMode);
+                const mime = buf ? getImageMime(buf) : null;
+
+                if (!mime || buf.length < 16) {
+                  failCount++;
+                  console.warn(
+                    `[loop] Bad frame (fail ${failCount}/${MAX_FAILS})`,
+                  );
+                  if (failCount >= MAX_FAILS) {
+                    // FIX F: don't loop forever with invisible failures
+                    setStatus(
+                      "error",
+                      `${failCount} bad frames — phone locked? Signal lost?`,
+                    );
+                    stopStream();
+                    return;
                   }
-                } else {
-                  pngBuf = await tryTransport("shell:");
-                }
-                if (!pngBuf) {
-                  await new Promise((r) => setTimeout(r, 200));
+                  await new Promise((r) => setTimeout(r, 300));
                   continue;
                 }
 
-                if (aborted || scAborted) break;
-
-                await drawFrame(pngBuf);
-
-                // Small yield to keep UI responsive between frames
+                failCount = 0;
+                await drawFrame(buf);
+                // Yield between frames so the UI stays responsive
                 await new Promise((r) => setTimeout(r, 30));
               }
-            };
+            }
 
-            stopStream._scStop = () => {
-              scAborted = true;
-            };
+            // Override stopStream to also abort the screencap loop
+            // Note: liveDisconnectHandler captures `stopStream` variable by
+            // reference, so USB disconnect will call this new version. ✓
             const origStop = stopStream;
             stopStream = () => {
               scAborted = true;
@@ -1383,23 +1517,15 @@
             };
             btnDisconnect.onclick = stopStream;
 
-            runScreencapLoop();
+            runScreencapLoop(); // fire and forget — loop exits on aborted/scAborted
             return; // skip H264 path below
           }
 
-          // ── H264 SCREENRECORD MODE (non-Honor devices) ───────────────────────
+          // ── H264 SCREENRECORD MODE (non-Honor devices) ──────────────
           const [size, bitrate] = qualVal.split(",");
-          // Try exec-out: first (raw bytes, no framing).
-          // If no data arrives in 8 s, auto-switch to shell: with Shell Protocol v2 stripping.
           const recCmd = `screenrecord --output-format=h264 --size ${size} --bit-rate ${bitrate} --time-limit 180 -`;
-          setStatus(
-            "connecting",
-            "Starting screenrecord\u2026 (keep screen on!)",
-          );
+          setStatus("connecting", "Starting screenrecord… (keep screen on!)");
 
-          // Android Shell Protocol v2 stripper — used when shell: is needed
-          // Each message: [id:1B][type:1B][len:4B LE][payload]
-          // type 1=stdout (H264), 2=stderr, 3=exit
           class ShellProtoStripper {
             constructor() {
               this.buf = new Uint8Array(0);
@@ -1454,7 +1580,7 @@
 
           let useShellProto = false,
             stripper = null;
-          setStatus("connecting", "Waiting for first frame\u2026");
+          setStatus("connecting", "Waiting for first frame…");
           streaming = true;
 
           let firstFrameReceived = false;
@@ -1491,7 +1617,7 @@
                 if (!firstFrameReceived) {
                   firstFrameReceived = true;
                   clearWatchdog();
-                  setStatus("connected", `Streaming \u00b7 ${size}`);
+                  setStatus("connected", `Streaming · ${size}`);
                 }
               },
               error: (e) => {
@@ -1576,7 +1702,6 @@
           };
           shell.onData = dataHandler;
 
-          // Watchdog: if exec-out sends nothing in 8 s, switch to shell: with proto stripping
           _watchdogRef = setTimeout(async () => {
             if (firstFrameReceived || aborted) return;
             if (!useShellProto) {
@@ -1598,20 +1723,17 @@
                 shell.onError = (e) => {
                   clearWatchdog();
                   if (!aborted) {
-                    setStatus("error", "USB error \u2014 replug & reconnect");
+                    setStatus("error", "USB error — replug & reconnect");
                     stopStream();
                   }
                 };
                 setStatus(
                   "connecting",
-                  "Switched to shell mode \u2014 waiting for frame\u2026",
+                  "Switched to shell mode — waiting for frame…",
                 );
                 _watchdogRef = setTimeout(() => {
                   if (!firstFrameReceived && !aborted)
-                    setStatus(
-                      "error",
-                      "No frames \u2014 try 360p, keep screen on",
-                    );
+                    setStatus("error", "No frames — try 360p, keep screen on");
                 }, 15000);
               } catch (e) {
                 setStatus("error", "Failed to open shell stream: " + e.message);
@@ -1620,10 +1742,11 @@
             } else {
               setStatus(
                 "error",
-                "No frames \u2014 try 360p, keep screen on, replug cable",
+                "No frames — try 360p, keep screen on, replug cable",
               );
             }
           }, 8000);
+
           shell.onClose = () => {
             clearWatchdog();
             if (!aborted) stopStream();
@@ -1632,7 +1755,7 @@
             clearWatchdog();
             console.error("Stream error:", e);
             if (!aborted) {
-              setStatus("error", "USB error \u2014 replug & reconnect");
+              setStatus("error", "USB error — replug & reconnect");
               stopStream();
             }
           };
